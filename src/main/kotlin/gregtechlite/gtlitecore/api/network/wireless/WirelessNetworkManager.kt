@@ -60,25 +60,32 @@ object WirelessNetworkManager {
      * Get all holders that are input hatches (energy receivers) in a channel.
      */
     fun getInputHolders(channel: Int): List<WirelessEnergyHolder> {
-        return networks[channel]?.filter { it.isInput } ?: emptyList()
+        return networks[channel]?.filter { it.role == WirelessRole.INPUT } ?: emptyList()
     }
 
     /**
      * Get all holders that are output hatches (dynamo/senders) in a channel.
      */
     fun getOutputHolders(channel: Int): List<WirelessEnergyHolder> {
-        return networks[channel]?.filter { !it.isInput } ?: emptyList()
+        return networks[channel]?.filter { it.role == WirelessRole.OUTPUT } ?: emptyList()
+    }
+
+    /**
+     * Get all holders that are storage hatches in a channel.
+     */
+    fun getStorageHolders(channel: Int): List<WirelessEnergyHolder> {
+        return networks[channel]?.filter { it.role == WirelessRole.STORAGE } ?: emptyList()
     }
 
     /**
      * Main update function called every tick.
-     * Performs energy transfer every 5 ticks.
+     * Performs energy transfer every 5 seconds (100 ticks at 20 tps).
      */
     fun update(world: World) {
         if (world.isRemote) return
 
         val currentTick = world.totalWorldTime
-        if (currentTick - lastTransferTick < 5) return
+        if (currentTick - lastTransferTick < 100) return
 
         lastTransferTick = currentTick
         transferEnergy(world)
@@ -86,50 +93,58 @@ object WirelessNetworkManager {
 
     /**
      * Transfer energy within each channel.
-     * Output hatches send all their buffered energy to all input hatches.
+     * Energy flow:
+     * 1. Collect all energy from OUTPUT holders (dynamo hatches)
+     * 2. First distribute to INPUT holders (energy hatches) - they have priority
+     * 3. Remaining energy goes to STORAGE holders (if excess)
+     * 4. If INPUT holders need more, release from STORAGE to fill the gap
+     * 5. Remove distributed energy from OUTPUT holders
      */
-    private fun transferEnergy(world: World) {
+    private fun transferEnergy(@Suppress("UNUSED_PARAMETER") world: World) {
         for ((channel, holders) in networks) {
             if (holders.isEmpty()) continue
 
             // Collect all available energy from output hatches (dynamo)
-            val outputHolders = holders.filter { !it.isInput }
+            val outputHolders = holders.filter { it.role == WirelessRole.OUTPUT }
+            val inputHolders = holders.filter { it.role == WirelessRole.INPUT }
+            val storageHolders = holders.filter { it.role == WirelessRole.STORAGE }
+
             var totalAvailableEnergy = 0L
 
             for (output in outputHolders) {
-                val outputEnergy = output.energyContainer.energyStored
-                if (outputEnergy > 0) {
-                    // Draw energy from the output hatch's energy container
-                    val drawn = output.energyContainer.removeEnergy(outputEnergy)
-                    totalAvailableEnergy += drawn
+                if (output.buffer > 0) {
+                    totalAvailableEnergy += output.buffer
                 }
             }
 
-            if (totalAvailableEnergy <= 0) continue
+            // If no output energy and no storage, nothing to do
+            if (totalAvailableEnergy <= 0 && storageHolders.all { it.buffer <= 0 }) continue
 
-            // Distribute energy to all input hatches (energy)
-            val inputHolders = holders.filter { it.isInput }
+            // If no input hatches, nothing to distribute to
             if (inputHolders.isEmpty()) continue
 
-            // Calculate how much each input hatch can receive
             var remainingEnergy = totalAvailableEnergy
+
+            // Step 1: Calculate total input capacity needed
             val inputHoldersWithCapacity = inputHolders.map { holder ->
                 val canAccept = holder.capacity - holder.buffer
                 Triple(holder, canAccept, 0L)
             }.toMutableList()
 
-            // First pass: distribute to those that can accept
+            val totalInputCapacityNeeded = inputHoldersWithCapacity.sumOf { it.second }
+
+            // Step 2: First pass - distribute available energy to input hatches
             for (i in inputHoldersWithCapacity.indices) {
                 val (holder, canAccept, _) = inputHoldersWithCapacity[i]
-                if (canAccept <= 0) continue
+                if (canAccept <= 0 || remainingEnergy <= 0) continue
 
-                val share = remainingEnergy / inputHolders.size
+                val share = remainingEnergy / inputHolders.size.coerceAtLeast(1)
                 val actualShare = minOf(share, canAccept)
                 inputHoldersWithCapacity[i] = Triple(holder, canAccept, actualShare)
                 remainingEnergy -= actualShare
             }
 
-            // Second pass: give remaining energy to those who can still accept
+            // Step 3: Second pass - give remaining energy to those who can still accept
             if (remainingEnergy > 0) {
                 for (i in inputHoldersWithCapacity.indices) {
                     val (holder, canAccept, alreadyGiven) = inputHoldersWithCapacity[i]
@@ -142,11 +157,76 @@ object WirelessNetworkManager {
                 }
             }
 
-            // Actually add energy to input hatches
+            // Step 4: If input hatches still need more, try to get from storage
+            var energyFromStorage = 0L
+            for (i in inputHoldersWithCapacity.indices) {
+                val (_, canAccept, alreadyGiven) = inputHoldersWithCapacity[i]
+                val stillNeeded = canAccept - alreadyGiven
+                if (stillNeeded > 0) {
+                    // Try to get from storage
+                    for (storage in storageHolders) {
+                        if (storage.buffer > 0 && stillNeeded > energyFromStorage) {
+                            val canTake = minOf(storage.buffer, stillNeeded - energyFromStorage)
+                            energyFromStorage += canTake
+                        }
+                    }
+                }
+            }
+
+            // Step 5: Add energy from storage to input hatches if needed
+            if (energyFromStorage > 0) {
+                var energyToDistribute = energyFromStorage
+                for (i in inputHoldersWithCapacity.indices) {
+                    val (holder, canAccept, alreadyGiven) = inputHoldersWithCapacity[i]
+                    val stillNeeded = canAccept - alreadyGiven
+                    if (stillNeeded > 0 && energyToDistribute > 0) {
+                        val toAdd = minOf(stillNeeded, energyToDistribute)
+                        inputHoldersWithCapacity[i] = Triple(holder, canAccept, alreadyGiven + toAdd)
+                        energyToDistribute -= toAdd
+                    }
+                }
+                // Remove energy taken from storage
+                var remainingFromStorage = energyFromStorage
+                for (storage in storageHolders) {
+                    if (remainingFromStorage <= 0) break
+                    val toRemove = minOf(storage.buffer, remainingFromStorage)
+                    storage.removeEnergy(toRemove)
+                    remainingFromStorage -= toRemove
+                }
+            }
+
+            // Step 6: Actually add energy to input hatches
             for ((holder, _, amount) in inputHoldersWithCapacity) {
                 if (amount > 0) {
-                    // Add energy to the holder's buffer
-                    holder.energyContainer.addEnergy(amount)
+                    holder.addEnergy(amount)
+                }
+            }
+
+            // Step 7: Put remaining energy into storage (if any)
+            if (remainingEnergy > 0) {
+                for (storage in storageHolders) {
+                    if (remainingEnergy <= 0) break
+                    val canAccept = storage.capacity - storage.buffer
+                    if (canAccept > 0) {
+                        val toAdd = minOf(remainingEnergy, canAccept)
+                        storage.addEnergy(toAdd)
+                        remainingEnergy -= toAdd
+                    }
+                }
+            }
+
+            // Step 8: Remove distributed energy from output hatches
+            if (outputHolders.isNotEmpty()) {
+                val energyToRemove = totalAvailableEnergy - remainingEnergy
+                val removePerHolder = energyToRemove / outputHolders.size
+                val extraRemainder = (energyToRemove % outputHolders.size).toInt()
+
+                for ((index, output) in outputHolders.withIndex()) {
+                    var toRemove = removePerHolder
+                    if (index < extraRemainder) {
+                        toRemove += 1
+                    }
+                    output.buffer = maxOf(0L, output.buffer - toRemove)
                 }
             }
         }

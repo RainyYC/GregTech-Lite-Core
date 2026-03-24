@@ -3,8 +3,14 @@ package gregtechlite.gtlitecore.common.metatileentity.part
 import codechicken.lib.render.CCRenderState
 import codechicken.lib.render.pipeline.IVertexOperation
 import codechicken.lib.vec.Matrix4
+import com.cleanroommc.modularui.api.drawable.IKey
+import com.cleanroommc.modularui.factory.PosGuiData
+import com.cleanroommc.modularui.screen.ModularPanel
+import com.cleanroommc.modularui.screen.UISettings
+import com.cleanroommc.modularui.value.sync.IntSyncValue
+import com.cleanroommc.modularui.value.sync.PanelSyncManager
+import com.cleanroommc.modularui.widgets.textfield.TextFieldWidget
 import gregtech.api.GTValues
-import gregtech.api.capability.GregtechDataCodes
 import gregtech.api.capability.IEnergyContainer
 import gregtech.api.capability.impl.EnergyContainerHandler
 import gregtech.api.metatileentity.MetaTileEntity
@@ -12,16 +18,21 @@ import gregtech.api.metatileentity.interfaces.IGregTechTileEntity
 import gregtech.api.metatileentity.multiblock.AbilityInstances
 import gregtech.api.metatileentity.multiblock.IMultiblockAbilityPart
 import gregtech.api.metatileentity.multiblock.MultiblockAbility
+import gregtech.api.mui.GTGuiTextures
+import gregtech.api.mui.GTGuis
 import gregtech.client.renderer.texture.Textures
 import gregtech.common.metatileentities.multi.multiblockpart.MetaTileEntityMultiblockPart
 import gregtechlite.gtlitecore.api.network.wireless.WirelessEnergyHolder
 import gregtechlite.gtlitecore.api.network.wireless.WirelessNetworkManager
+import gregtechlite.gtlitecore.api.network.wireless.WirelessRole
 import net.minecraft.client.resources.I18n
 import net.minecraft.item.ItemStack
 import net.minecraft.nbt.NBTTagCompound
 import net.minecraft.network.PacketBuffer
 import net.minecraft.util.ResourceLocation
 import net.minecraft.world.World
+
+private const val UPDATE_WIRELESS_CHANNEL = 998877
 
 /**
  * Wireless Dynamo Hatch - outputs energy to wireless network (output hatch)
@@ -32,9 +43,14 @@ class WirelessDynamoHatch(
     private val amperage: Int = 1
 ) : MetaTileEntityMultiblockPart(id, tier), IMultiblockAbilityPart<IEnergyContainer> {
 
+    companion object {
+        const val MAX_CHANNEL = 16
+    }
+
     private var channel: Int = 0
-    private var energyBuffer: Long = 0L
-    private val bufferCapacity: Long = GTValues.V[tier] * 16L * amperage
+    private var persistedBuffer: Long = 0L
+    // 10 seconds of buffering (10s * 20 ticks/s = 200 ticks)
+    private val bufferCapacity: Long = GTValues.V[tier] * 200L * amperage
     private var wirelessHolder: WirelessEnergyHolder? = null
 
     private lateinit var energyContainer: IEnergyContainer
@@ -73,19 +89,22 @@ class WirelessDynamoHatch(
         super.update()
         if (world.isRemote) return
 
-        // Update wireless network every tick
+        // Update wireless network every 5 ticks
         if (offsetTimer % 5 == 0L) {
             updateWirelessConnection()
         }
 
-        // Transfer energy from machine to buffer
-        if (offsetTimer % 20 == 0L && energyBuffer < bufferCapacity) {
+        // Transfer energy from machine to holder buffer every 5 ticks
+        if (offsetTimer % 5 == 0L) {
+            val holder = wirelessHolder ?: return
             val available = energyContainer.energyStored
             if (available > 0) {
-                val canStore = bufferCapacity - energyBuffer
-                val toTransfer = minOf(available, canStore)
-                val transferred = energyContainer.removeEnergy(toTransfer)
-                energyBuffer += transferred
+                val canStore = bufferCapacity - holder.buffer
+                if (canStore > 0) {
+                    val toTransfer = minOf(available, canStore)
+                    energyContainer.removeEnergy(toTransfer)
+                    holder.buffer += toTransfer
+                }
             }
         }
     }
@@ -110,9 +129,9 @@ class WirelessDynamoHatch(
     private fun createWirelessHolder(): WirelessEnergyHolder {
         return WirelessEnergyHolder(
             channel = channel,
-            buffer = energyBuffer,
+            buffer = persistedBuffer,
             capacity = bufferCapacity,
-            isInput = false,
+            role = WirelessRole.OUTPUT,
             energyContainer = energyContainer,
             pos = pos
         )
@@ -125,12 +144,12 @@ class WirelessDynamoHatch(
             channel = newChannel
             if (!world.isRemote) {
                 markDirty()
-                writeCustomData(GregtechDataCodes.UPDATE_WIRELESS_CHANNEL) { buf -> buf.writeInt(channel) }
+                writeCustomData(UPDATE_WIRELESS_CHANNEL) { buf -> buf.writeInt(channel) }
             }
         }
     }
 
-    fun getBufferEnergyStored(): Long = energyBuffer
+    fun getBufferEnergyStored(): Long = wirelessHolder?.buffer ?: 0L
 
     fun getBufferCapacity(): Long = bufferCapacity
 
@@ -145,7 +164,27 @@ class WirelessDynamoHatch(
         }
     }
 
-    override fun openGUIOnRightClick(): Boolean = false
+    override fun openGUIOnRightClick(): Boolean = true
+
+    override fun usesMui2(): Boolean = true
+
+    @Suppress("UnstableApiUsage")
+    override fun buildUI(guiData: PosGuiData, panelSyncManager: PanelSyncManager, settings: UISettings): ModularPanel {
+        val channelSync = IntSyncValue(
+            { this.channel },
+            { newChannel -> this.channel = newChannel.coerceIn(0, MAX_CHANNEL) }
+        )
+
+        return GTGuis.createPanel(this, 180, 60)
+            .child(IKey.lang(metaFullName).asWidget().pos(5, 5))
+            .child(IKey.lang("gtlitecore.gui.wireless_hatch.channel_label").asWidget().pos(5, 25))
+            .child(TextFieldWidget()
+                .pos(90, 22)
+                .size(80, 18)
+                .setNumbers(0, MAX_CHANNEL)
+                .value(channelSync)
+                .setTextColor(0xFFAAAA99.toInt()))
+    }
 
     override fun writeInitialSyncData(buf: PacketBuffer) {
         super.writeInitialSyncData(buf)
@@ -159,7 +198,7 @@ class WirelessDynamoHatch(
 
     override fun receiveCustomData(dataId: Int, buf: PacketBuffer) {
         super.receiveCustomData(dataId, buf)
-        if (dataId == GregtechDataCodes.UPDATE_WIRELESS_CHANNEL) {
+        if (dataId == UPDATE_WIRELESS_CHANNEL) {
             channel = buf.readInt()
         }
     }
@@ -167,14 +206,14 @@ class WirelessDynamoHatch(
     override fun writeToNBT(data: NBTTagCompound): NBTTagCompound {
         super.writeToNBT(data)
         data.setInteger("wireless_channel", channel)
-        data.setLong("wireless_buffer", energyBuffer)
+        data.setLong("wireless_buffer", wirelessHolder?.buffer ?: persistedBuffer)
         return data
     }
 
     override fun readFromNBT(data: NBTTagCompound) {
         super.readFromNBT(data)
         channel = data.getInteger("wireless_channel")
-        energyBuffer = data.getLong("wireless_buffer")
+        persistedBuffer = data.getLong("wireless_buffer")
     }
 
     override fun addInformation(stack: ItemStack?, world: World?, tooltip: MutableList<String>, advanced: Boolean) {

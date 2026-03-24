@@ -140,6 +140,7 @@ import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineHugeItemBus
 import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineSterileCleaningMaintenanceHatch
 import gregtechlite.gtlitecore.common.metatileentity.part.WirelessDynamoHatch
 import gregtechlite.gtlitecore.common.metatileentity.part.WirelessEnergyHatch
+import gregtechlite.gtlitecore.common.metatileentity.part.WirelessStorageHatch
 import gregtechlite.gtlitecore.common.metatileentity.single.MachineMobExtractor
 import gregtechlite.gtlitecore.common.metatileentity.single.MachineSapCollector
 import gregtechlite.gtlitecore.common.metatileentity.single.SteamMachineSapCollector
@@ -264,6 +265,7 @@ object GTLiteMetaTileEntities
 
     lateinit var WIRELESS_ENERGY_HATCH: Array<WirelessEnergyHatch>
     lateinit var WIRELESS_DYNAMO_HATCH: Array<WirelessDynamoHatch>
+    lateinit var WIRELESS_STORAGE_HATCH: Array<WirelessStorageHatch>
 
     // endregion
 
@@ -709,6 +711,11 @@ object GTLiteMetaTileEntities
         // 4171-4200: Wireless Dynamo Hatches (IV-OpV, 1A/2A/4A/8A)
         WIRELESS_DYNAMO_HATCH = register(4171, 0..8) {
             WirelessDynamoHatch(GTLiteMod.id("wireless_dynamo_hatch.${VN[it + IV].lowercase()}"), it + IV, 1)
+        }
+
+        // 4201-4230: Wireless Storage Hatches (IV-OpV, 1A)
+        WIRELESS_STORAGE_HATCH = register(4201, 0..8) {
+            WirelessStorageHatch(GTLiteMod.id("wireless_storage_hatch.${VN[it + IV].lowercase()}"), it + IV, 1)
         }
 
         // 5001-5100: Item Import/Export Buses and Fluid Import/Export Hatches

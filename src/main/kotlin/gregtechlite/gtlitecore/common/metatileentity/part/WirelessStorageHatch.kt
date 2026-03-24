@@ -18,7 +18,6 @@ import gregtech.api.metatileentity.interfaces.IGregTechTileEntity
 import gregtech.api.metatileentity.multiblock.AbilityInstances
 import gregtech.api.metatileentity.multiblock.IMultiblockAbilityPart
 import gregtech.api.metatileentity.multiblock.MultiblockAbility
-import gregtech.api.mui.GTGuiTextures
 import gregtech.api.mui.GTGuis
 import gregtech.client.renderer.texture.Textures
 import gregtech.common.metatileentities.multi.multiblockpart.MetaTileEntityMultiblockPart
@@ -35,9 +34,10 @@ import net.minecraft.world.World
 private const val UPDATE_WIRELESS_CHANNEL = 998877
 
 /**
- * Wireless Energy Hatch - receives energy from wireless network (input hatch)
+ * Wireless Storage Hatch - bidirectional buffer pool for wireless energy network.
+ * Stores excess energy when there is surplus, releases stored energy when there is shortage.
  */
-class WirelessEnergyHatch(
+class WirelessStorageHatch(
     id: ResourceLocation,
     tier: Int,
     private val amperage: Int = 1
@@ -49,8 +49,8 @@ class WirelessEnergyHatch(
 
     private var channel: Int = 0
     private var persistedBuffer: Long = 0L
-    // 10 seconds of buffering (10s * 20 ticks/s = 200 ticks)
-    private val bufferCapacity: Long = GTValues.V[tier] * 200L * amperage
+    // 60 seconds of buffering (60s * 20 ticks/s = 1200 ticks)
+    private val bufferCapacity: Long = GTValues.V[tier] * 1200L * amperage
     private var wirelessHolder: WirelessEnergyHolder? = null
 
     private lateinit var energyContainer: IEnergyContainer
@@ -60,24 +60,29 @@ class WirelessEnergyHatch(
     }
 
     private fun initializeEnergyContainer() {
-        energyContainer = EnergyContainerHandler.receiverContainer(
+        // Storage hatch uses a bidirectional container
+        energyContainer = EnergyContainerHandler(
             this,
-            GTValues.V[tier] * 16L * amperage,
+            GTValues.V[tier] * 64L * amperage,
+            GTValues.V[tier],
+            amperage.toLong(),
             GTValues.V[tier],
             amperage.toLong()
         )
     }
 
     override fun createMetaTileEntity(tileEntity: IGregTechTileEntity?): MetaTileEntity {
-        return WirelessEnergyHatch(metaTileEntityId, getTier(), amperage)
+        return WirelessStorageHatch(metaTileEntityId, getTier(), amperage)
     }
 
     override fun getAbility(): MultiblockAbility<IEnergyContainer>? {
-        return MultiblockAbility.INPUT_ENERGY
+        // Storage hatch doesn't need to expose an ability in the multiblock
+        // It just connects to the wireless network directly
+        return null
     }
 
     override fun registerAbilities(abilityInstances: AbilityInstances) {
-        abilityInstances.add(energyContainer)
+        // No ability registration needed
     }
 
     override fun initializeInventory() {
@@ -94,18 +99,32 @@ class WirelessEnergyHatch(
             updateWirelessConnection()
         }
 
-        // Transfer energy from holder buffer to the machine every 20 ticks
-        if (offsetTimer % 20 == 0L) {
-            val holder = wirelessHolder ?: return
-            if (holder.buffer > 0) {
-                val canAccept = energyContainer.energyCanBeInserted
-                if (canAccept > 0) {
-                    val toTransfer = minOf(holder.buffer, canAccept)
-                    energyContainer.addEnergy(toTransfer)
-                    // Remove from holder buffer directly (don't sync via energyBuffer)
-                    holder.buffer -= toTransfer
-                }
+        // Transfer energy between machine and holder buffer every 10 ticks
+        if (offsetTimer % 10 == 0L) {
+            transferEnergyWithHolder()
+        }
+    }
+
+    private fun transferEnergyWithHolder() {
+        val holder = wirelessHolder ?: return
+
+        // Transfer from machine to holder (when machine has excess energy)
+        val available = energyContainer.energyStored
+        if (available > 0) {
+            val canStore = bufferCapacity - holder.buffer
+            if (canStore > 0) {
+                val toTransfer = minOf(available, canStore)
+                energyContainer.removeEnergy(toTransfer)
+                holder.buffer += toTransfer
             }
+        }
+
+        // Transfer from holder to machine (when machine needs energy)
+        val needed = energyContainer.energyCanBeInserted
+        if (needed > 0 && holder.buffer > 0) {
+            val toTransfer = minOf(holder.buffer, needed)
+            energyContainer.addEnergy(toTransfer)
+            holder.buffer -= toTransfer
         }
     }
 
@@ -134,7 +153,7 @@ class WirelessEnergyHatch(
             channel = channel,
             buffer = persistedBuffer,
             capacity = bufferCapacity,
-            role = WirelessRole.INPUT,
+            role = WirelessRole.STORAGE,
             energyContainer = energyContainer,
             pos = pos
         )
@@ -163,6 +182,7 @@ class WirelessEnergyHatch(
     override fun renderMetaTileEntity(renderState: CCRenderState?, translation: Matrix4?, pipeline: Array<IVertexOperation?>?) {
         super.renderMetaTileEntity(renderState, translation, pipeline)
         if (shouldRenderOverlay()) {
+            // Use a neutral color for storage - render both input and output arrows
             Textures.ENERGY_IN.renderSided(getFrontFacing(), renderState, translation, pipeline)
         }
     }
@@ -220,9 +240,7 @@ class WirelessEnergyHatch(
     }
 
     override fun addInformation(stack: ItemStack?, world: World?, tooltip: MutableList<String>, advanced: Boolean) {
-        tooltip.add(I18n.format("gtlitecore.machine.wireless_energy_hatch.tooltip"))
-        tooltip.add(I18n.format("gregtech.universal.tooltip.voltage_in", GTValues.V[getTier()], GTValues.VNF[getTier()]))
-        tooltip.add(I18n.format("gregtech.universal.tooltip.amperage_in_till", amperage))
+        tooltip.add(I18n.format("gtlitecore.machine.wireless_storage_hatch.tooltip"))
         tooltip.add(I18n.format("gregtech.universal.tooltip.energy_storage_capacity", bufferCapacity))
         tooltip.add(I18n.format("gtlitecore.machine.wireless_energy_hatch.channel", channel))
     }

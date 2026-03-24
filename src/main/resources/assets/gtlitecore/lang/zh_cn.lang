@@ -2875,6 +2875,73 @@ gtlitecore.machine.dual_hatch.export.uiv.name=§2UIV§f 输出总成
 gtlitecore.machine.dual_hatch.export.uxv.name=§eUXV§f 输出总成
 gtlitecore.machine.dual_hatch.export.opv.name=§9OpV§f 输出总成
 
+# Wireless Energy Hatches
+gtlitecore.machine.wireless_energy_hatch.iv.name=§1IV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.iv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.luv.name=§dLuV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.luv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.zpm.name=§cZPM§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.zpm.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.uv.name=§3UV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.uv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.uhv.name=§4UHV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.uhv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.uev.name=§aUEV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.uev.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.uiv.name=§2UIV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.uiv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.uxv.name=§eUXV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.uxv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.opv.name=§9OpV§f无线能源仓
+gtlitecore.machine.wireless_energy_hatch.opv.tooltip=从无线网络接收能量
+gtlitecore.machine.wireless_energy_hatch.channel=频道: %d
+gtlitecore.machine.wireless_energy_hatch.connections=连接数: %d
+
+# GUI
+gtlitecore.gui.wireless_hatch.channel_label=频道
+
+# Wireless Dynamo Hatches
+gtlitecore.machine.wireless_dynamo_hatch.iv.name=§1IV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.iv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.luv.name=§dLuV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.luv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.zpm.name=§cZPM§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.zpm.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.uv.name=§3UV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.uv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.uhv.name=§4UHV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.uhv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.uev.name=§aUEV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.uev.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.uiv.name=§2UIV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.uiv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.uxv.name=§eUXV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.uxv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.opv.name=§9OpV§f无线动力仓
+gtlitecore.machine.wireless_dynamo_hatch.opv.tooltip=向无线网络输出能量
+gtlitecore.machine.wireless_dynamo_hatch.channel=频道: %d
+gtlitecore.machine.wireless_dynamo_hatch.connections=连接数: %d
+gtlitecore.machine.wireless_storage_hatch.iv.name=§1IV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.iv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.luv.name=§dLuV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.luv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.zpm.name=§cZPM§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.zpm.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.uv.name=§3UV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.uv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.uhv.name=§4UHV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.uhv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.uev.name=§aUEV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.uev.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.uiv.name=§2UIV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.uiv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.uxv.name=§eUXV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.uxv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.opv.name=§9OpV§f无线存储器
+gtlitecore.machine.wireless_storage_hatch.opv.tooltip=双向缓冲池，存储过剩能量并在需要时释放
+gtlitecore.machine.wireless_storage_hatch.channel=频道: %d
+gtlitecore.machine.wireless_storage_hatch.connections=连接数: %d
+
 # Ore Prefixes
 item.material.oreprefix.gemSolitary=稀世的%s
 item.material.oreprefix.oreLimestone=石灰岩%s矿石
