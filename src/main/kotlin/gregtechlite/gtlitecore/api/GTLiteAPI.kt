@@ -11,6 +11,7 @@ import gregtechlite.gtlitecore.api.block.attribute.registerBlockVariants
 import gregtechlite.gtlitecore.api.command.CommandManager
 import gregtechlite.gtlitecore.api.module.ModuleManager
 import gregtechlite.gtlitecore.api.network.NetworkHandler
+import gregtechlite.gtlitecore.api.network.wireless.WirelessNetworkManager
 import gregtechlite.gtlitecore.api.sound.SoundManager
 import gregtechlite.gtlitecore.common.block.adapter.GTCleanroomCasing
 import gregtechlite.gtlitecore.common.block.adapter.GTFusionCasing
@@ -66,6 +67,9 @@ object GTLiteAPI
 
     // Will be available at the Pre-Initialization stage.
     lateinit var soundManager: SoundManager
+
+    // Will be available at the Pre-Initialization stage.
+    lateinit var wirelessNetworkManager: WirelessNetworkManager
 
     // endregion
 

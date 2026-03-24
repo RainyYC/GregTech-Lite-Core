@@ -138,6 +138,8 @@ import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineAirIntakeHa
 import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineDualHatch
 import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineHugeItemBus
 import gregtechlite.gtlitecore.common.metatileentity.part.PartMachineSterileCleaningMaintenanceHatch
+import gregtechlite.gtlitecore.common.metatileentity.part.WirelessDynamoHatch
+import gregtechlite.gtlitecore.common.metatileentity.part.WirelessEnergyHatch
 import gregtechlite.gtlitecore.common.metatileentity.single.MachineMobExtractor
 import gregtechlite.gtlitecore.common.metatileentity.single.MachineSapCollector
 import gregtechlite.gtlitecore.common.metatileentity.single.SteamMachineSapCollector
@@ -259,6 +261,9 @@ object GTLiteMetaTileEntities
 
     lateinit var DUAL_IMPORT_HATCH: Array<PartMachineDualHatch>
     lateinit var DUAL_EXPORT_HATCH: Array<PartMachineDualHatch>
+
+    lateinit var WIRELESS_ENERGY_HATCH: Array<WirelessEnergyHatch>
+    lateinit var WIRELESS_DYNAMO_HATCH: Array<WirelessDynamoHatch>
 
     // endregion
 
@@ -696,7 +701,15 @@ object GTLiteMetaTileEntities
                                           it + IV, 16_777_216, true)
         }
 
-        // TODO Wireless Energy/Dynamo Hatches
+        // 4141-4170: Wireless Energy Hatches (IV-OpV, 1A/2A/4A/8A)
+        WIRELESS_ENERGY_HATCH = register(4141, 0..8) {
+            WirelessEnergyHatch(GTLiteMod.id("wireless_energy_hatch.${VN[it + IV].lowercase()}"), it + IV, 1)
+        }
+
+        // 4171-4200: Wireless Dynamo Hatches (IV-OpV, 1A/2A/4A/8A)
+        WIRELESS_DYNAMO_HATCH = register(4171, 0..8) {
+            WirelessDynamoHatch(GTLiteMod.id("wireless_dynamo_hatch.${VN[it + IV].lowercase()}"), it + IV, 1)
+        }
 
         // 5001-5100: Item Import/Export Buses and Fluid Import/Export Hatches
 
