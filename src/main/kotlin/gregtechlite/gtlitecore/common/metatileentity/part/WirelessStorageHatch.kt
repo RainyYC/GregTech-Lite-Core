@@ -115,7 +115,7 @@ class WirelessStorageHatch(
             if (canStore > 0) {
                 val toTransfer = minOf(available, canStore)
                 energyContainer.removeEnergy(toTransfer)
-                holder.buffer += toTransfer
+                holder.addEnergy(toTransfer)
             }
         }
 
@@ -124,7 +124,7 @@ class WirelessStorageHatch(
         if (needed > 0 && holder.buffer > 0) {
             val toTransfer = minOf(holder.buffer, needed)
             energyContainer.addEnergy(toTransfer)
-            holder.buffer -= toTransfer
+            holder.removeEnergy(toTransfer)
         }
     }
 
@@ -229,7 +229,9 @@ class WirelessStorageHatch(
     override fun writeToNBT(data: NBTTagCompound): NBTTagCompound {
         super.writeToNBT(data)
         data.setInteger("wireless_channel", channel)
-        data.setLong("wireless_buffer", wirelessHolder?.buffer ?: persistedBuffer)
+        // Sync persistedBuffer with holder buffer before saving
+        persistedBuffer = wirelessHolder?.buffer ?: persistedBuffer
+        data.setLong("wireless_buffer", persistedBuffer)
         return data
     }
 

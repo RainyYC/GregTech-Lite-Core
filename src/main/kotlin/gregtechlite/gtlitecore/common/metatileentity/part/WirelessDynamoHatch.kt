@@ -103,7 +103,7 @@ class WirelessDynamoHatch(
                 if (canStore > 0) {
                     val toTransfer = minOf(available, canStore)
                     energyContainer.removeEnergy(toTransfer)
-                    holder.buffer += toTransfer
+                    holder.addEnergy(toTransfer)
                 }
             }
         }
@@ -206,7 +206,9 @@ class WirelessDynamoHatch(
     override fun writeToNBT(data: NBTTagCompound): NBTTagCompound {
         super.writeToNBT(data)
         data.setInteger("wireless_channel", channel)
-        data.setLong("wireless_buffer", wirelessHolder?.buffer ?: persistedBuffer)
+        // Sync persistedBuffer with holder buffer before saving
+        persistedBuffer = wirelessHolder?.buffer ?: persistedBuffer
+        data.setLong("wireless_buffer", persistedBuffer)
         return data
     }
 
