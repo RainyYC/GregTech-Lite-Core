@@ -244,7 +244,7 @@ class WirelessStorageHatch(
     override fun addInformation(stack: ItemStack?, world: World?, tooltip: MutableList<String>, advanced: Boolean) {
         tooltip.add(I18n.format("gtlitecore.machine.wireless_storage_hatch.tooltip"))
         tooltip.add(I18n.format("gregtech.universal.tooltip.energy_storage_capacity", bufferCapacity))
-        tooltip.add(I18n.format("gtlitecore.machine.wireless_energy_hatch.channel", channel))
+        tooltip.add(I18n.format("gtlitecore.machine.wireless_storage_hatch.channel", channel))
     }
 
     override fun onRemoval() {

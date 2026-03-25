@@ -3913,6 +3913,21 @@ gtlitecore.tooltip.machine.energy_mode.fusion_coil=§6-%s%%/Fusion Coil Tier
 gtlitecore.tooltip.machine.laser_hatch=Laser Hatch Support: §9Enabled
 gtlitecore.tooltip.machine.special_max_voltage=Max Recipe Tier Predicate: §3Disabled
 
+# GUI
+gtlitecore.gui.wireless_hatch.channel_label=Channel
+
+# Wireless Energy Hatches
+gtlitecore.machine.wireless_energy_hatch.channel=Channel: %d
+gtlitecore.machine.wireless_energy_hatch.connections=Connections: %d
+
+# Wireless Dynamo Hatches
+gtlitecore.machine.wireless_dynamo_hatch.channel=Channel: %d
+gtlitecore.machine.wireless_dynamo_hatch.connections=Connections: %d
+
+# Wireless Storage Hatches
+gtlitecore.machine.wireless_storage_hatch.channel=Channel: %d
+gtlitecore.machine.wireless_storage_hatch.connections=Connections: %d
+
 # Creative Tabs
 itemGroup.gtlite.main=GregTech Lite
 itemGroup.gtlite.machine=GregTech Lite | Machines

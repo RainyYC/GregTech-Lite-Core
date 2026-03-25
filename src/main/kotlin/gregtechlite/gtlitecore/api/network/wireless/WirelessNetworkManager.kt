@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Manager for all wireless energy networks.
  * Handles registration, unregistration, and energy transfer between channels.
- * Energy transfer occurs every 5 ticks (4 times per second at 20 tps).
+ * Energy transfer occurs every 100 ticks (5 seconds at 20 tps).
  */
 object WirelessNetworkManager {
 
@@ -67,18 +67,25 @@ object WirelessNetworkManager {
         val inputs = holders.filter { it.role == WirelessRole.INPUT }
         val storages = holders.filter { it.role == WirelessRole.STORAGE }
 
-        if (inputs.isEmpty()) return
+        if (outputs.isEmpty() && storages.isEmpty()) return
 
-        var remaining = outputs.sumOf { it.buffer }
+        var remaining = 0L
 
-        // Step 1: OUTPUT -> INPUT
-        remaining = distributeToInputs(outputs, inputs, remaining)
+        // Step 1: OUTPUT -> INPUT (if OUTPUT and INPUT exist)
+        if (outputs.isNotEmpty() && inputs.isNotEmpty()) {
+            remaining = outputs.sumOf { it.buffer }
+            remaining = distributeToInputs(outputs, inputs, remaining)
+        }
 
-        // Step 2: STORAGE -> INPUT
-        fillInputsFromStorage(inputs, storages)
+        // Step 2: STORAGE -> INPUT (always, if both exist and INPUT needs energy)
+        if (inputs.isNotEmpty() && storages.isNotEmpty()) {
+            fillInputsFromStorage(inputs, storages)
+        }
 
-        // Step 3: OUTPUT -> STORAGE
-        storeToStorages(outputs, storages, remaining)
+        // Step 3: OUTPUT -> STORAGE (if OUTPUT exists and has remaining energy)
+        if (outputs.isNotEmpty() && storages.isNotEmpty() && remaining > 0) {
+            storeToStorages(storages, remaining)
+        }
     }
 
     /**
@@ -144,12 +151,14 @@ object WirelessNetworkManager {
 
     /**
      * Store remaining output energy to storage.
+     * Note: The 'remaining' energy was already removed from outputs in Step 1 (distributeToInputs),
+     * so we just need to add it to storage without removing from outputs again.
      */
     private fun storeToStorages(
-        outputs: List<WirelessEnergyHolder>,
         storages: List<WirelessEnergyHolder>,
         remaining: Long
     ) {
+        if (storages.isEmpty() || remaining <= 0) return
         var leftover = remaining
         for (storage in storages) {
             if (leftover <= 0) break
@@ -158,8 +167,7 @@ object WirelessNetworkManager {
 
             val toTransfer = minOf(leftover, canAccept)
             storage.addEnergy(toTransfer)
-            val removed = removeFromOutputs(outputs, toTransfer)
-            leftover -= removed
+            leftover -= toTransfer
         }
     }
 
