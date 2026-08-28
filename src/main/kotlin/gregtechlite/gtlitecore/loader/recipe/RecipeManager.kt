@@ -9,6 +9,7 @@ import gregtechlite.gtlitecore.loader.recipe.machine.MachineRecipeList
 import gregtechlite.gtlitecore.loader.recipe.machine.MachineRecipeLoader
 import gregtechlite.gtlitecore.loader.recipe.machine.casing.MachineCasingRecipeList
 import gregtechlite.gtlitecore.loader.recipe.oreprocessing.OreProcessingList
+import gregtechlite.gtlitecore.loader.recipe.producer.ComponentAssemblyLineRecipeProducer
 import gregtechlite.gtlitecore.loader.recipe.producer.RecipeProducerList
 
 internal object RecipeManager
@@ -44,7 +45,14 @@ internal object RecipeManager
 
         // Override Recipes and Recipe Conflicts Resolver.
         OverrideRecipeLoader.init()
+
         RecipeConflicts.init()
+
+        // Component Assembly Line recipes read the final single-unit component
+        // recipes (GTCEu LV-EV assembler recipes, this mod's LuV+ assembly line
+        // recipes and all overrides above) and expand them to 64x batches. This
+        // must stay after every step that can modify those component recipes.
+        ComponentAssemblyLineRecipeProducer.produce()
 
         // Post Recipe Producers.
         RecipeProducerList.postInit()

@@ -23,7 +23,6 @@ internal object RecipeProducerList
         WrapItemRecipeProducer.produce()
         GreenhouseRecipeProducer.produce()
         MiningDroneAsteroidRecipeProducer.produce()
-        ComponentAssemblyLineRecipeProducer.produce()
         NuclearFissionRecipeProducer.produce()
         PCBFactoryRecipeProducer.produce()
         IntegratedOreProcessorRecipeProducer.produce()
