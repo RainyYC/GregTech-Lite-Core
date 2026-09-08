@@ -223,6 +223,9 @@ internal object ComponentAssemblyLineRecipeProducer
     private const val MAX_ITEM_INPUTS = 12
     private const val MAX_FLUID_INPUTS = 12
 
+    // FluidStack only stores an Int amount; never silently truncate a Long one.
+    private const val MAX_FLUID_AMOUNT = Int.MAX_VALUE.toLong()
+
     private val DURATION_BY_TIER = intArrayOf(
         0, 15, 30, 30, 45, 45, 60, 60, 75, 75, 90, 90, 105, 105, 120)
 
@@ -325,17 +328,30 @@ internal object ComponentAssemblyLineRecipeProducer
         val recipes = ASSEMBLER_RECIPES.recipeList.asSequence() +
             ASSEMBLY_LINE_RECIPES.recipeList.asSequence()
 
+        var dropped = 0
         for (base in recipes)
         {
             if (base.isHidden) continue
             val output = base.outputs.firstOrNull() ?: continue
             val metaItem = (output.item as? MetaItem<*>)?.getItem(output) ?: continue
             val target = targetByItem[metaItem] ?: continue
-            generateCoal(base, target)
+            dropped += generateCoal(base, target)
         }
+
+        // Dropped variants mean a component silently has no CoAL recipe. Report
+        // them at ERROR level so the regression is visible in the game log.
+        if (dropped > 0)
+            LOGGER.error("Dropped {} CoAL recipe variant(s); see the messages above for the affected components",
+                dropped)
     }
 
-    private fun generateCoal(base: Recipe, target: Target)
+    /**
+     * Generates the 64x CoAL recipe(s) for one base recipe.
+     *
+     * @return the number of variants that could not be represented within the
+     *         recipe map's 12 item / 12 fluid input limits.
+     */
+    private fun generateCoal(base: Recipe, target: Target): Int
     {
         var variants = listOf(Variant())
 
@@ -369,6 +385,7 @@ internal object ComponentAssemblyLineRecipeProducer
             variants.forEach { addFluidInput(it, fluid) }
         }
 
+        var dropped = 0
         for (variant in variants)
         {
             repairVariant(variant)
@@ -378,6 +395,18 @@ internal object ComponentAssemblyLineRecipeProducer
                 LOGGER.warn("Skipped CoAL recipe for {}: {} item inputs (max {}), {} fluid inputs (max {})",
                     base.outputs.first().displayName, variant.items.size, MAX_ITEM_INPUTS,
                     fluidCount, MAX_FLUID_INPUTS)
+                dropped++
+                continue
+            }
+
+            // FluidStack only carries an Int amount; reject instead of truncating.
+            val maxFluidAmount = sequenceOf(variant.fluids.values, variant.genericFluids.values)
+                .flatten().maxOrNull() ?: 0L
+            if (maxFluidAmount > MAX_FLUID_AMOUNT)
+            {
+                LOGGER.error("Skipped CoAL recipe for {}: fluid amount {} exceeds the Int limit {}",
+                    base.outputs.first().displayName, maxFluidAmount, MAX_FLUID_AMOUNT)
+                dropped++
                 continue
             }
 
@@ -392,6 +421,7 @@ internal object ComponentAssemblyLineRecipeProducer
                 output(target.item, 64)
             }
         }
+        return dropped
     }
 
     private fun expandOreInput(variants: List<Variant>, input: GTRecipeOreInput, tier: Int): List<Variant>
@@ -635,8 +665,10 @@ internal object ComponentAssemblyLineRecipeProducer
     }
 
     /**
-     * Converts a material amount (GTCEu M-units, e.g. one ingot = [M]) into
-     * millibuckets of fluid (one ingot = [L] mB).
+     * Converts a GTCEu internal material amount into millibuckets of fluid.
+     *
+     * [M] is GTCEu's internal unit for one ingot's worth of material and [L] is
+     * the millibucket value of one ingot, so the scale factor is `L / M`.
      */
     private fun toFluidAmount(materialAmount: Long): Long = materialAmount * L / M
 
