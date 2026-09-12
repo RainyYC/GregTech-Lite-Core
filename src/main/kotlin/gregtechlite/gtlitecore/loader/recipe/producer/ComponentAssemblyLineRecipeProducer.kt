@@ -16,15 +16,11 @@ import gregtech.api.unification.material.MarkerMaterials.Tier
 import gregtech.api.unification.material.Material
 import gregtech.api.unification.material.Materials.SamariumMagnetic
 import gregtech.api.unification.ore.OrePrefix
-import gregtech.api.unification.ore.OrePrefix.cableGtHex
 import gregtech.api.unification.ore.OrePrefix.cableGtDouble
+import gregtech.api.unification.ore.OrePrefix.cableGtHex
 import gregtech.api.unification.ore.OrePrefix.cableGtOctal
 import gregtech.api.unification.ore.OrePrefix.cableGtQuadruple
 import gregtech.api.unification.ore.OrePrefix.cableGtSingle
-import gregtech.api.unification.ore.OrePrefix.foil
-import gregtech.api.unification.ore.OrePrefix.frameGt
-import gregtech.api.unification.ore.OrePrefix.gear
-import gregtech.api.unification.ore.OrePrefix.gearSmall
 import gregtech.api.unification.ore.OrePrefix.gem
 import gregtech.api.unification.ore.OrePrefix.gemFlawless
 import gregtech.api.unification.ore.OrePrefix.pipeHugeFluid
@@ -34,13 +30,8 @@ import gregtech.api.unification.ore.OrePrefix.pipeSmallFluid
 import gregtech.api.unification.ore.OrePrefix.plate
 import gregtech.api.unification.ore.OrePrefix.plateDense
 import gregtech.api.unification.ore.OrePrefix.plateDouble
-import gregtech.api.unification.ore.OrePrefix.ring
-import gregtech.api.unification.ore.OrePrefix.rotor
-import gregtech.api.unification.ore.OrePrefix.round
-import gregtech.api.unification.ore.OrePrefix.screw
 import gregtech.api.unification.ore.OrePrefix.stick
 import gregtech.api.unification.ore.OrePrefix.stickLong
-import gregtech.api.unification.ore.OrePrefix.wireFine
 import gregtech.api.unification.ore.OrePrefix.wireGtDouble
 import gregtech.api.unification.ore.OrePrefix.wireGtHex
 import gregtech.api.unification.ore.OrePrefix.wireGtOctal
@@ -227,20 +218,22 @@ internal object ComponentAssemblyLineRecipeProducer
     private const val MAX_FLUID_AMOUNT = Int.MAX_VALUE.toLong()
 
     private val DURATION_BY_TIER = intArrayOf(
-        0, 15, 30, 30, 45, 45, 60, 60, 75, 75, 90, 90, 105, 105, 120)
+        0, 15, 30, 30, 45,
+        45, 60, 60, 75, 75,
+        90, 90, 105, 105, 120)
 
     private val WRAP_CIRCUIT_BY_TIER = arrayOf(
-        WRAP_CIRCUIT_ULV, WRAP_CIRCUIT_LV, WRAP_CIRCUIT_MV, WRAP_CIRCUIT_HV,
-        WRAP_CIRCUIT_EV, WRAP_CIRCUIT_IV, WRAP_CIRCUIT_LuV, WRAP_CIRCUIT_ZPM,
-        WRAP_CIRCUIT_UV, WRAP_CIRCUIT_UHV, WRAP_CIRCUIT_UEV, WRAP_CIRCUIT_UIV,
-        WRAP_CIRCUIT_UXV, WRAP_CIRCUIT_OpV, WRAP_CIRCUIT_MAX)
+        WRAP_CIRCUIT_ULV, WRAP_CIRCUIT_LV, WRAP_CIRCUIT_MV, WRAP_CIRCUIT_HV, WRAP_CIRCUIT_EV,
+        WRAP_CIRCUIT_IV, WRAP_CIRCUIT_LuV, WRAP_CIRCUIT_ZPM, WRAP_CIRCUIT_UV, WRAP_CIRCUIT_UHV,
+        WRAP_CIRCUIT_UEV, WRAP_CIRCUIT_UIV, WRAP_CIRCUIT_UXV, WRAP_CIRCUIT_OpV, WRAP_CIRCUIT_MAX)
 
     private val CIRCUIT_MARKER_BY_TIER = arrayOf(
-        Tier.ULV, Tier.LV, Tier.MV, Tier.HV, Tier.EV, Tier.IV, Tier.LuV, Tier.ZPM,
-        Tier.UV, Tier.UHV, Tier.UEV, Tier.UIV, Tier.UXV, Tier.OpV, Tier.MAX)
+        Tier.ULV, Tier.LV, Tier.MV, Tier.HV, Tier.EV,
+        Tier.IV, Tier.LuV, Tier.ZPM, Tier.UV, Tier.UHV,
+        Tier.UEV, Tier.UIV, Tier.UXV, Tier.OpV, Tier.MAX)
 
     // Magnetic rods stay solid even at LuV+, everything else rod-like melts.
-    private val MAGNETIC_STICK_LONG = setOf(
+    private val MAGNETIC_STICK_LONG_MATERIALS = setOf(
         SamariumMagnetic, ChromiumGermaniumTellurideMagnetic, Magnetium)
 
     private val PLATE_PREFIXES = setOf(plate, plateDouble, plateDense)
@@ -308,22 +301,51 @@ internal object ComponentAssemblyLineRecipeProducer
         val genericFluids = mutableMapOf<Fluid, Long>()
         val contributions = mutableListOf<FluidContribution>()
 
-        fun copy(): Variant = Variant().apply {
+        val itemSlots: Int
+            get() = items.size
+
+        val fluidSlots: Int
+            get() = fluids.size + genericFluids.size
+
+        fun fitsWithinLimits(): Boolean = itemSlots <= MAX_ITEM_INPUTS && fluidSlots <= MAX_FLUID_INPUTS
+
+        fun duplicate(): Variant = Variant().apply {
             items.addAll(this@Variant.items)
             fluids.putAll(this@Variant.fluids)
             genericFluids.putAll(this@Variant.genericFluids)
             contributions.addAll(this@Variant.contributions)
         }
+
+        fun replaceWith(snapshot: VariantSnapshot)
+        {
+            items.clear()
+            items.addAll(snapshot.items)
+            fluids.clear()
+            fluids.putAll(snapshot.fluids)
+            genericFluids.clear()
+            genericFluids.putAll(snapshot.genericFluids)
+        }
+    }
+
+    /**
+     * Immutable snapshot of a [Variant]'s payable inputs. The repair search
+     * keeps the best candidate as one value, so the items and the two fluid
+     * maps can never drift out of sync.
+     */
+    private data class VariantSnapshot(
+        val items: List<ItemStack>,
+        val fluids: Map<Material, Long>,
+        val genericFluids: Map<Fluid, Long>)
+    {
+        val itemSlots: Int
+            get() = items.size
     }
 
     fun produce()
     {
-        val targetByItem = mutableMapOf<MetaItem<*>.MetaValueItem, Target>()
-        COMPONENTS.forEachIndexed { familyIndex, family ->
-            family.forEachIndexed { tierIndex, item ->
-                targetByItem[item] = Target(item, tierIndex + 1, familyIndex + 1)
-            }
-        }
+        val targetByItem = COMPONENTS.flatMapIndexed { familyIndex, family ->
+            family.mapIndexed { tierIndex, item -> item to Target(item, tierIndex + 1, familyIndex + 1) }
+        }.toMap()
 
         val recipes = ASSEMBLER_RECIPES.recipeList.asSequence() +
             ASSEMBLY_LINE_RECIPES.recipeList.asSequence()
@@ -335,7 +357,7 @@ internal object ComponentAssemblyLineRecipeProducer
             val output = base.outputs.firstOrNull() ?: continue
             val metaItem = (output.item as? MetaItem<*>)?.getItem(output) ?: continue
             val target = targetByItem[metaItem] ?: continue
-            dropped += generateCoal(base, target)
+            dropped += generateCoal(base, target, output)
         }
 
         // Dropped variants mean a component silently has no CoAL recipe. Report
@@ -351,7 +373,7 @@ internal object ComponentAssemblyLineRecipeProducer
      * @return the number of variants that could not be represented within the
      *         recipe map's 12 item / 12 fluid input limits.
      */
-    private fun generateCoal(base: Recipe, target: Target): Int
+    private fun generateCoal(base: Recipe, target: Target, output: ItemStack): Int
     {
         var variants = listOf(Variant())
 
@@ -369,12 +391,15 @@ internal object ComponentAssemblyLineRecipeProducer
                     else
                         variants = expandOreInput(variants, input, target.tier)
                 }
-                is GTRecipeItemInput -> variants.forEach { addItemInput(it, input) }
+                is GTRecipeItemInput ->
+                {
+                    variants = applyItemInput(variants, input)
+                }
                 else -> {}
             }
         }
 
-        for ((_, anyInputs) in groupedAnyInputs)
+        for (anyInputs in groupedAnyInputs.values)
         {
             variants = expandGroupedAnyInput(variants, anyInputs, target.tier)
         }
@@ -389,23 +414,21 @@ internal object ComponentAssemblyLineRecipeProducer
         for (variant in variants)
         {
             repairVariant(variant)
-            val fluidCount = variant.fluids.size + variant.genericFluids.size
-            if (variant.items.size > MAX_ITEM_INPUTS || fluidCount > MAX_FLUID_INPUTS)
+            if (!variant.fitsWithinLimits())
             {
                 LOGGER.warn("Skipped CoAL recipe for {}: {} item inputs (max {}), {} fluid inputs (max {})",
-                    base.outputs.first().displayName, variant.items.size, MAX_ITEM_INPUTS,
-                    fluidCount, MAX_FLUID_INPUTS)
+                    output.displayName, variant.itemSlots, MAX_ITEM_INPUTS,
+                    variant.fluidSlots, MAX_FLUID_INPUTS)
                 dropped++
                 continue
             }
 
             // FluidStack only carries an Int amount; reject instead of truncating.
-            val maxFluidAmount = sequenceOf(variant.fluids.values, variant.genericFluids.values)
-                .flatten().maxOrNull() ?: 0L
+            val maxFluidAmount = (variant.fluids.values + variant.genericFluids.values).maxOrNull() ?: 0L
             if (maxFluidAmount > MAX_FLUID_AMOUNT)
             {
                 LOGGER.error("Skipped CoAL recipe for {}: fluid amount {} exceeds the Int limit {}",
-                    base.outputs.first().displayName, maxFluidAmount, MAX_FLUID_AMOUNT)
+                    output.displayName, maxFluidAmount, MAX_FLUID_AMOUNT)
                 dropped++
                 continue
             }
@@ -447,31 +470,20 @@ internal object ComponentAssemblyLineRecipeProducer
         val first = stacks.first()
         val prefix = OreDictUnifier.getPrefix(first) ?: return variants
 
-        // "Any" ore-dict tags (e.g. ringAnyRubber) are paid as molten material and
-        // produce one recipe per registered material.
-        if (oreName.contains("Any"))
-        {
-            return expandGroupedAnyInput(variants, listOf(input), tier)
-        }
-        val byMaterial = linkedMapOf<Material, ItemStack>()
-        for (stack in stacks)
-        {
-            val material = OreDictUnifier.getMaterial(stack)?.material ?: continue
-            if (material !in byMaterial) byMaterial[material] = stack
-        }
-        if (byMaterial.isEmpty()) return variants
+        val materials = distinctMaterials(stacks)
+        if (materials.isEmpty()) return variants
 
-        return if (byMaterial.size == 1)
+        return if (materials.size == 1)
         {
-            val material = byMaterial.keys.first()
+            val material = materials.first()
             variants.forEach { addOrePart(it, prefix, material, input.amount, tier, false) }
             variants
         }
         else
         {
             variants.flatMap { base ->
-                byMaterial.map { (material, _) ->
-                    val variant = base.copy()
+                materials.map { material ->
+                    val variant = base.duplicate()
                     addOrePart(variant, prefix, material, input.amount, tier, false)
                     variant
                 }
@@ -479,6 +491,20 @@ internal object ComponentAssemblyLineRecipeProducer
         }
     }
 
+    /**
+     * Collects the distinct materials of [stacks] in first-seen order, keeping
+     * the generated variants deterministic.
+     */
+    private fun distinctMaterials(stacks: Array<ItemStack>): Set<Material>
+    {
+        val materials = linkedSetOf<Material>()
+        for (stack in stacks)
+        {
+            val material = OreDictUnifier.getMaterial(stack)?.material ?: continue
+            materials.add(material)
+        }
+        return materials
+    }
 
     /**
      * Expands a group of identical Any ore-dict inputs as a single choice.
@@ -495,19 +521,14 @@ internal object ComponentAssemblyLineRecipeProducer
 
         val prefix = OreDictUnifier.getPrefix(stacks.first()) ?: return variants
 
-        val byMaterial = linkedMapOf<Material, ItemStack>()
-        for (stack in stacks)
-        {
-            val material = OreDictUnifier.getMaterial(stack)?.material ?: continue
-            if (material !in byMaterial) byMaterial[material] = stack
-        }
-        if (byMaterial.isEmpty()) return variants
+        val materials = distinctMaterials(stacks)
+        if (materials.isEmpty()) return variants
 
         val totalCount = inputs.sumOf { it.amount }
 
         return variants.flatMap { base ->
-            byMaterial.map { (material, _) ->
-                val variant = base.copy()
+            materials.map { material ->
+                val variant = base.duplicate()
                 addOrePart(variant, prefix, material, totalCount, tier, true)
                 variant
             }
@@ -515,9 +536,9 @@ internal object ComponentAssemblyLineRecipeProducer
     }
 
     private fun addOrePart(variant: Variant, prefix: OrePrefix, material: Material,
-                           count: Int, tier: Int, tag: Boolean)
+                           count: Int, tier: Int, forceFluid: Boolean)
     {
-        if (tag)
+        if (forceFluid)
         {
             addFluid(variant, material, toFluidAmount(prefix.getMaterialAmount(material) * count * 64L))
             return
@@ -534,7 +555,7 @@ internal object ComponentAssemblyLineRecipeProducer
         val total = amountPerItem * count * 64L
         val itemAlternative = buildItemAlternative(prefix, material, count)
 
-        if (prefix == stickLong && material in MAGNETIC_STICK_LONG)
+        if (prefix == stickLong && material in MAGNETIC_STICK_LONG_MATERIALS)
         {
             addItemStack(variant.items, OreDictUnifier.get(stickLong, material), count * 64L)
             return
@@ -585,7 +606,7 @@ internal object ComponentAssemblyLineRecipeProducer
             }
             prefix in GEM_PREFIXES ->
             {
-                if (count * 64L <= 64)
+                if (count <= 1)
                     addItemStack(variant.items, OreDictUnifier.get(prefix, material), count * 64L)
                 else
                     addFluid(variant, material, toFluidAmount(total), itemAlternative)
@@ -598,13 +619,13 @@ internal object ComponentAssemblyLineRecipeProducer
     private fun addPlate(variant: Variant, material: Material, total: Long,
                          itemAlternative: List<ItemStack>?)
     {
-        for (target in arrayOf(plateDense, plateDouble))
+        for (compressedPrefix in arrayOf(plateDense, plateDouble))
         {
-            val targetAmount = target.getMaterialAmount(material)
-            if (targetAmount <= 0 || total % targetAmount != 0L) continue
-            val stack = OreDictUnifier.get(target, material)
+            val compressedAmount = compressedPrefix.getMaterialAmount(material)
+            if (compressedAmount <= 0 || total % compressedAmount != 0L) continue
+            val stack = OreDictUnifier.get(compressedPrefix, material)
             if (stack.isEmpty) continue
-            val count = total / targetAmount
+            val count = total / compressedAmount
             if (count <= 64)
             {
                 addItemStack(variant.items, stack, count)
@@ -614,16 +635,16 @@ internal object ComponentAssemblyLineRecipeProducer
         addFluid(variant, material, toFluidAmount(total), itemAlternative)
     }
 
-    private fun compressToHex(variant: Variant, material: Material, total: Long, target: OrePrefix,
+    private fun compressToHex(variant: Variant, material: Material, total: Long, hexPrefix: OrePrefix,
                               itemAlternative: List<ItemStack>?)
     {
-        val hexAmount = target.getMaterialAmount(material)
+        val hexAmount = hexPrefix.getMaterialAmount(material)
         if (hexAmount > 0 && total % hexAmount == 0L)
         {
             val hexCount = total / hexAmount
             if (hexCount <= 64)
             {
-                addItemStack(variant.items, OreDictUnifier.get(target, material), hexCount)
+                addItemStack(variant.items, OreDictUnifier.get(hexPrefix, material), hexCount)
                 return
             }
         }
@@ -672,10 +693,17 @@ internal object ComponentAssemblyLineRecipeProducer
      */
     private fun toFluidAmount(materialAmount: Long): Long = materialAmount * L / M
 
-    private fun addItemInput(variant: Variant, input: GTRecipeItemInput)
+    /**
+     * Adds [input] to every existing variant. Unlike the expand* helpers this
+     * cannot fork a variant, so it hands the same list back; the uniform
+     * `variants = step(variants)` shape in [generateCoal] is what makes the two
+     * kinds of step read the same.
+     */
+    private fun applyItemInput(variants: List<Variant>, input: GTRecipeItemInput): List<Variant>
     {
-        val stack = input.getInputStacks().firstOrNull() ?: return
-        addItemStack(variant.items, stack, stack.count.toLong() * 64)
+        val stack = input.getInputStacks().firstOrNull() ?: return variants
+        variants.forEach { addItemStack(it.items, stack, stack.count.toLong() * 64) }
+        return variants
     }
 
     private fun addItemStack(items: MutableList<ItemStack>, stack: ItemStack, count: Long)
@@ -726,30 +754,28 @@ internal object ComponentAssemblyLineRecipeProducer
      */
     private fun repairVariant(variant: Variant)
     {
-        if (variant.fluids.size + variant.genericFluids.size <= MAX_FLUID_INPUTS) return
+        if (variant.fluidSlots <= MAX_FLUID_INPUTS) return
         if (variant.contributions.isEmpty()) return
 
-        val working = variant.copy()
+        val working = variant.duplicate()
         val candidates = variant.contributions.sortedBy { it.itemSlots }
 
-        var bestItemSlots = Int.MAX_VALUE
-        var bestItems: List<ItemStack>? = null
-        var bestFluids: Map<Material, Long>? = null
-        var bestGenericFluids: Map<Fluid, Long>? = null
+        var best: VariantSnapshot? = null
 
         fun search(index: Int, itemSlots: Int)
         {
-            val fluidSlots = working.fluids.size + working.genericFluids.size
-            if (itemSlots <= MAX_ITEM_INPUTS && fluidSlots <= MAX_FLUID_INPUTS && itemSlots < bestItemSlots)
+            val previous = best
+            if (itemSlots <= MAX_ITEM_INPUTS && working.fluidSlots <= MAX_FLUID_INPUTS
+                && (previous == null || itemSlots < previous.itemSlots))
             {
-                bestItemSlots = itemSlots
-                bestItems = working.items.toList()
-                bestFluids = HashMap(working.fluids)
-                bestGenericFluids = HashMap(working.genericFluids)
+                best = VariantSnapshot(working.items.toList(), HashMap(working.fluids), HashMap(working.genericFluids))
             }
 
             if (index >= candidates.size) return
-            if (itemSlots >= bestItemSlots) return
+
+            // No branch below can lower itemSlots, so stop once we are no better.
+            val recorded = best
+            if (recorded != null && itemSlots >= recorded.itemSlots) return
 
             // Leave this contribution fluidized.
             search(index + 1, itemSlots)
@@ -757,52 +783,49 @@ internal object ComponentAssemblyLineRecipeProducer
             val contribution = candidates[index]
             if (itemSlots + contribution.itemSlots <= MAX_ITEM_INPUTS)
             {
-                applyContribution(working, contribution, undo = false)
+                applyContribution(working, contribution)
                 search(index + 1, itemSlots + contribution.itemSlots)
-                applyContribution(working, contribution, undo = true)
+                revertContribution(working, contribution)
             }
         }
 
-        search(0, working.items.size)
+        search(0, working.itemSlots)
 
-        if (bestItems != null)
-        {
-            variant.items.clear()
-            variant.items.addAll(bestItems!!)
-            variant.fluids.clear()
-            variant.fluids.putAll(bestFluids!!)
-            variant.genericFluids.clear()
-            variant.genericFluids.putAll(bestGenericFluids!!)
-        }
+        val snapshot = best ?: return
+        variant.replaceWith(snapshot)
     }
 
-    private fun applyContribution(variant: Variant, contribution: FluidContribution, undo: Boolean)
+    /**
+     * Pays [contribution] as items again: its fluid is dropped and its item
+     * stacks are appended to [variant].
+     */
+    private fun applyContribution(variant: Variant, contribution: FluidContribution)
     {
-        adjustFluid(variant.fluids, contribution.material, contribution.amount, undo)
+        removeFluid(variant.fluids, contribution.material, contribution.amount)
         if (contribution.extraMaterial != null)
-            adjustFluid(variant.fluids, contribution.extraMaterial, contribution.extraAmount, undo)
+            removeFluid(variant.fluids, contribution.extraMaterial, contribution.extraAmount)
 
-        if (undo)
-        {
-            repeat(contribution.itemStacks.size) { variant.items.removeAt(variant.items.size - 1) }
-        }
-        else
-        {
-            variant.items.addAll(contribution.itemStacks)
-        }
+        variant.items.addAll(contribution.itemStacks)
     }
 
-    private fun adjustFluid(fluids: MutableMap<Material, Long>, material: Material, amount: Long, undo: Boolean)
+    /**
+     * Undoes [applyContribution], restoring the fluid and dropping the item
+     * stacks it appended.
+     */
+    private fun revertContribution(variant: Variant, contribution: FluidContribution)
     {
-        if (undo)
-        {
-            fluids.merge(material, amount, Long::plus)
-        }
-        else
-        {
-            val remaining = (fluids[material] ?: 0L) - amount
-            if (remaining <= 0) fluids.remove(material) else fluids[material] = remaining
-        }
+        variant.fluids.merge(contribution.material, contribution.amount, Long::plus)
+        if (contribution.extraMaterial != null)
+            variant.fluids.merge(contribution.extraMaterial, contribution.extraAmount, Long::plus)
+
+        val from = variant.items.size - contribution.itemStacks.size
+        variant.items.subList(from, variant.items.size).clear()
+    }
+
+    private fun removeFluid(fluids: MutableMap<Material, Long>, material: Material, amount: Long)
+    {
+        val remaining = (fluids[material] ?: 0L) - amount
+        if (remaining <= 0) fluids.remove(material) else fluids[material] = remaining
     }
 
     // @formatter:on
