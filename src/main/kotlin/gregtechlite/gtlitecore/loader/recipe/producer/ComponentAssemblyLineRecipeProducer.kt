@@ -768,7 +768,11 @@ internal object ComponentAssemblyLineRecipeProducer
             if (itemSlots <= MAX_ITEM_INPUTS && working.fluidSlots <= MAX_FLUID_INPUTS
                 && (previous == null || itemSlots < previous.itemSlots))
             {
-                best = VariantSnapshot(working.items.toList(), HashMap(working.fluids), HashMap(working.genericFluids))
+                // LinkedHashMap, not HashMap: Material does not override hashCode,
+                // so a HashMap snapshot iterates in identity-hash order and would
+                // order the fluid inputs differently on every game launch.
+                best = VariantSnapshot(working.items.toList(),
+                    LinkedHashMap(working.fluids), LinkedHashMap(working.genericFluids))
             }
 
             if (index >= candidates.size) return
