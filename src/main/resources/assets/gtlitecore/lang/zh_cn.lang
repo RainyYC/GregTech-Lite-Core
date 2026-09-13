@@ -4669,6 +4669,8 @@ gtlitecore.command.component.print=材料成分：%s
 gtlitecore.command.component.no_item=必须在主/副手持有物品时执行此命令。
 gtlitecore.command.component.no_component=当前手持物品没有材料成分。
 gtlitecore.command.component.not_player=这条命令只能由玩家使用。
+gtlitecore.command.recipeaudit.usage=用法：/gtlite recipeaudit <配方表名>，可选 %s
+gtlitecore.command.recipeaudit.unknown_map=未知的配方表 '%s'；可用：%s
 
 # Sounds
 gtlitecore.subtitle.tick.stellar_forge.name=恒星炎炀锻炉：超新星爆发

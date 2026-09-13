@@ -26,4 +26,10 @@ docs
 libs
 
 # reference source clone (per CLAUDE.md)
-GregTech
+# 必须锚定到仓库根：未锚定的 `GregTech` 在 core.ignorecase=true 下
+# 会连 `src/main/java/.../mixins/gregtech/` 一起忽略，导致新增 mixin 文件被静默丢弃。
+/GregTech
+
+# python
+__pycache__/
+*.pyc

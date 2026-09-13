@@ -13,6 +13,7 @@ import gregtechlite.gtlitecore.common.CommonProxy
 import gregtechlite.gtlitecore.common.EventHandlers
 import gregtechlite.gtlitecore.common.block.GTLiteBlocks
 import gregtechlite.gtlitecore.common.command.CommandMaterialComponent
+import gregtechlite.gtlitecore.common.command.CommandRecipeAudit
 import gregtechlite.gtlitecore.common.cover.GTLiteCoverBehaviors
 import gregtechlite.gtlitecore.common.entity.GTLiteMetaEntities
 import gregtechlite.gtlitecore.common.item.GTLiteMetaItems
@@ -158,6 +159,7 @@ internal class CoreModule : CustomModule
         GTLiteAPI.commandManager = commandManager
         commandManager.registerServerCommand(event)
         GTLiteAPI.commandManager.addCommand(CommandMaterialComponent())
+        GTLiteAPI.commandManager.addCommand(CommandRecipeAudit())
     }
     
     override fun serverStarted(event: FMLServerStartedEvent)
