@@ -2,18 +2,29 @@ package gregtechlite.gtlitecore.core.debug
 
 import gregtech.api.capability.IDataAccessHatch
 import gregtech.api.capability.IEnergyContainer
+import gregtech.api.metatileentity.MetaTileEntity
+import gregtech.api.metatileentity.interfaces.IGregTechTileEntity
 import gregtech.api.metatileentity.multiblock.AbilityInstances
+import gregtech.api.metatileentity.multiblock.IMultiblockPart
 import gregtech.api.metatileentity.multiblock.MultiblockAbility
 import gregtech.api.metatileentity.multiblock.MultiblockControllerBase
 import gregtech.api.recipes.Recipe
 import gregtech.api.recipes.ingredients.GTRecipeFluidInput
 import gregtech.api.recipes.properties.impl.ResearchProperty
 import gregtech.api.capability.impl.EnergyContainerList
+import gregtech.api.capability.impl.AbstractRecipeLogic
+import gregtech.api.capability.impl.MultiblockRecipeLogic
 import gregtech.api.capability.impl.FluidTankList
+import gregtech.api.capability.IMultipleTankHandler
 import gregtech.api.capability.impl.ItemHandlerList
 import gregtech.api.metatileentity.IVoidable
 import gregtech.api.recipes.RecipeBuilder
 import gregtech.api.recipes.logic.ParallelLogic
+import gregtech.api.GTValues
+import gregtech.api.pattern.BlockPattern
+import gregtech.api.pattern.FactoryBlockPattern
+import gregtech.client.renderer.ICubeRenderer
+import gregtech.client.renderer.texture.Textures
 import gregtech.api.util.GTTransferUtils
 import gregtechlite.gtlitecore.api.capability.handler.QuantumStorageHandler
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.MultiblockSpaceElevator
@@ -129,6 +140,9 @@ object AALIdleBench
         // C) GTLite color channel search: per-search rebuild cost.
         benchChannelRebuild()
 
+        // R) Sub-tick prepared-recipe cache A/B on the real prepare path.
+        benchSubTickPrepare()
+
         // E) How many AL recipes actually pass the "bus count" gate with an empty machine?
         logger.info("BENCH E/empty-machine-visible={}", countVisibleWithNoBuses(map))
 
@@ -199,6 +213,137 @@ object AALIdleBench
         }
         return visible
     }
+
+    // region sub-tick prepare cache A/B
+
+    private fun benchSubTickPrepare()
+    {
+        val controller = BenchMulti(ResourceLocation("gtlitecore", "bench_multi"))
+        val energyField = RecipeMapMultiblockController::class.java.getDeclaredField("energyContainer")
+        energyField.isAccessible = true
+        energyField.set(controller, EnergyContainerList(listOf(FakeEnergy(GTValues.V[GTValues.UXV]))))
+        val outputField = RecipeMapMultiblockController::class.java.getDeclaredField("outputInventory")
+        outputField.isAccessible = true
+        outputField.set(controller, VoidBus())
+        val outputFluidField = RecipeMapMultiblockController::class.java.getDeclaredField("outputFluidInventory")
+        outputFluidField.isAccessible = true
+        outputFluidField.set(controller, FluidTankList(true, emptyList()))
+
+        val logic = controller.recipeMapWorkable
+        val recipe = RecipeMaps.MACERATOR_RECIPES.recipeList.firstOrNull {
+            it.inputs.size == 1 && it.outputs.isNotEmpty() && it.fluidInputs.isEmpty()
+        } ?: run {
+            logger.warn("BENCH R skipped: no usable recipe")
+            return
+        }
+        val template = recipe.inputs[0].inputStacks.firstOrNull { !it.isEmpty } ?: return
+        val amountPerRun = recipe.inputs[0].amount
+        val bus = BufferBus(template, 1 shl 22)
+        val tanks = FluidTankList(true, emptyList())
+
+        val method = AbstractRecipeLogic::class.java.getDeclaredMethod("setupAndConsumeRecipeInputs",
+                Recipe::class.java, IItemHandlerModifiable::class.java, IMultipleTankHandler::class.java)
+        method.isAccessible = true
+        val switch = AbstractRecipeLogic::class.java.getDeclaredField("gtlitecore\$cacheEnabled")
+        switch.isAccessible = true
+
+        bus.refill()
+        val prepared = method.invoke(logic, recipe, bus, tanks) as Recipe?
+        logger.info("BENCH R/prepared sourceEUt={} duration={} preparedEUt={} outputs={}",
+                recipe.eUt, prepared?.duration, prepared?.eUt, prepared?.allItemOutputs?.size)
+
+        val run = { label: String, enabled: Boolean ->
+            switch.setBoolean(null, enabled)
+            bus.refill()
+            method.invoke(logic, recipe, bus, tanks)
+            repeat(200) { bus.refill(); method.invoke(logic, recipe, bus, tanks) }
+            report(label, sample(400) { bus.refill(); method.invoke(logic, recipe, bus, tanks) })
+        }
+
+        run("R/prepare-off-1", false)
+        run("R/prepare-on-1", true)
+        run("R/prepare-off-2", false)
+        run("R/prepare-on-2", true)
+
+        verifySubTickCache(logic, method, switch, bus, tanks, recipe, amountPerRun, energyField, controller)
+        switch.setBoolean(null, true)
+    }
+
+    private fun verifySubTickCache(logic: MultiblockRecipeLogic,
+                                   method: java.lang.reflect.Method,
+                                   switch: java.lang.reflect.Field,
+                                   bus: BufferBus,
+                                   tanks: FluidTankList,
+                                   recipe: Recipe,
+                                   amountPerRun: Int,
+                                   energyField: java.lang.reflect.Field,
+                                   controller: BenchMulti)
+    {
+        val baseEUt = recipe.eUt
+
+        fun prepareOnce(): Pair<Recipe?, Long>
+        {
+            val before = bus.stacks[0].count
+            val prepared = method.invoke(logic, recipe, bus, tanks) as Recipe?
+            return prepared to (before - bus.stacks[0].count).toLong()
+        }
+
+        // 1) A cache hit must consume exactly what recomputation would.
+        switch.setBoolean(null, false)
+        bus.setCount(1 shl 20)
+        prepareOnce()
+        val (offRecipe, offConsumed) = prepareOnce()
+
+        switch.setBoolean(null, true)
+        bus.setCount(1 shl 20)
+        prepareOnce()
+        val (onRecipe, onConsumed) = prepareOnce()
+
+        val consumptionMatches = offConsumed == onConsumed && onConsumed > 0
+        val recipeMatches = offRecipe?.eUt == onRecipe?.eUt && offRecipe?.duration == onRecipe?.duration
+
+        // 2) When inputs drop below the cached parallel amount the cache must fall back and the
+        //    recomputed recipe must use fewer parallels.
+        switch.setBoolean(null, true)
+        bus.setCount(1 shl 20)
+        prepareOnce()
+        val cachedParallel = (onRecipe?.eUt ?: 0L) / baseEUt
+        val smallParallel = 4L
+        bus.setCount((smallParallel * amountPerRun).toInt())
+        val (shrunkRecipe, shrunkConsumed) = prepareOnce()
+        val shrankCorrectly = shrunkRecipe != null
+                && shrunkRecipe.eUt < (onRecipe?.eUt ?: Long.MAX_VALUE)
+                && shrunkConsumed <= smallParallel * amountPerRun
+                && shrunkConsumed > 0
+
+        // 3) A different energy container must invalidate the cache immediately, not after the TTL.
+        switch.setBoolean(null, true)
+        bus.setCount(1 shl 20)
+        prepareOnce()
+        energyField.set(controller, EnergyContainerList(listOf(FakeEnergy(GTValues.V[GTValues.IV]))))
+        val (loweredRecipe, _) = prepareOnce()
+        val voltageGuardWorks = loweredRecipe != null && loweredRecipe.eUt < (onRecipe?.eUt ?: Long.MAX_VALUE)
+        energyField.set(controller, EnergyContainerList(listOf(FakeEnergy(GTValues.V[GTValues.UXV]))))
+
+        logger.info("BENCH VERIFY-subtick consumeMatch={} (off={} on={}) sameRecipe={} shrank={} ({} <- {} parallels, consumed={}) voltageGuard={}",
+                consumptionMatches, offConsumed, onConsumed, recipeMatches, shrankCorrectly,
+                cachedParallel, smallParallel, shrunkConsumed, voltageGuardWorks)
+    }
+
+    /** Minimal multiblock only used by the benchmark to drive a real MultiblockRecipeLogic. */
+    private class BenchMulti(id: ResourceLocation) : RecipeMapMultiblockController(id, RecipeMaps.MACERATOR_RECIPES)
+    {
+        override fun createMetaTileEntity(te: IGregTechTileEntity): MetaTileEntity = BenchMulti(metaTileEntityId)
+        override fun updateFormedValid() {}
+        override fun createStructurePattern(): BlockPattern = FactoryBlockPattern.start()
+                .aisle("S")
+                .where('S', selfPredicate())
+                .build()
+        override fun getBaseTexture(sourcePart: IMultiblockPart?): ICubeRenderer = Textures.SOLID_STEEL_CASING
+        override fun getFrontOverlay(): ICubeRenderer = Textures.SOLID_STEEL_CASING
+    }
+
+    // endregion
 
     // region color channel search probes
 
@@ -325,9 +470,14 @@ object AALIdleBench
     /** Input handler holding a large amount of one stack, refilled between samples. */
     private class BufferBus(private val template: ItemStack, private val count: Int) : IItemHandlerModifiable
     {
-        private val stacks = Array(4) { ItemStack.EMPTY }
+        val stacks = Array(4) { ItemStack.EMPTY }
         init { refill() }
-        fun refill() { stacks[0] = template.copy().also { it.count = count } }
+        fun refill() { setCount(count) }
+        fun setCount(newCount: Int)
+        {
+            stacks[0] = if (newCount <= 0) ItemStack.EMPTY
+            else template.copy().also { it.count = newCount }
+        }
         override fun getSlots() = stacks.size
         override fun getStackInSlot(slot: Int) = stacks[slot]
         override fun insertItem(slot: Int, stack: ItemStack, simulate: Boolean) = stack
