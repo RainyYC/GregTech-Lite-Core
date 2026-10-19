@@ -48,9 +48,10 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     {
         private const val MAX_SLICES = 16
 
-        // Fallback full scan interval, in ticks (1 second). Guards against any input state
-        // that is not covered by the fingerprint (e.g. research data written into a hatch).
-        private const val RESCAN_INTERVAL_TICKS = 20L
+        // Last-resort full scan interval, in ticks (10 seconds). Input changes are picked up
+        // through GT's notified handler lists, so this only covers changes that notify nothing:
+        // a runtime recipe map reload (CraftTweaker/GroovyScript) or a config reload.
+        private const val FALLBACK_RESCAN_TICKS = 200L
 
         // Slice status: -1: idle, 0: stuck, >0: working
         private const val IDLE = -1
@@ -130,9 +131,17 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             if (currentRecipe == null || !recipeInputsPresent())
             {
                 unlockRecipe()
-                // BENCH-FIX: an empty set of import buses can never match a recipe
-                // (recipes without item inputs are skipped anyway), so skip the scan.
-                if (hasAnyInputStack()) tryLockRecipe()
+                // An empty set of import buses can never match a recipe (recipes without item
+                // inputs are skipped anyway), so skip the scan.
+                if (hasAnyInputStack())
+                {
+                    // Inputs can change without touching the fingerprint below: a data orb
+                    // dropped into a data access hatch makes research recipes available while
+                    // the buses stay identical. GT reports every such change through the
+                    // controller's notified lists, so use them as the invalidation source.
+                    if (consumeInputNotifications()) invalidateScanMemo()
+                    tryLockRecipe()
+                }
             }
             startCycle()
         }
@@ -166,11 +175,11 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             return true
         }
 
-        // Skip the scan entirely when the observable input state did not change since the
-        // last scan. A full scan is still forced once per RESCAN_INTERVAL_TICKS.
+        // Skip the scan entirely when the observable input state did not change since the last
+        // scan. The scan is still forced by FALLBACK_RESCAN_TICKS as a last resort.
         val signature = inputSignature(buses, tanks, dataHatches, voltage)
         val now = controller.offsetTimer
-        if (signature == lastInputSignature && now - lastScanTime < RESCAN_INTERVAL_TICKS)
+        if (signature == lastInputSignature && now - lastScanTime < FALLBACK_RESCAN_TICKS)
             return false
         lastInputSignature = signature
         lastScanTime = now
@@ -295,6 +304,20 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
 
     private fun assemblyLineRecipes(): Collection<Recipe> =
         recipeSnapshot ?: RecipeMaps.ASSEMBLY_LINE_RECIPES.recipeList.also { recipeSnapshot = it }
+
+    /**
+     * Consumes GT's notified input handlers. Returns true when any handler reported a change
+     * since the last call, which means the input fingerprint can no longer be trusted.
+     */
+    private fun consumeInputNotifications(): Boolean
+    {
+        val items = controller.notifiedItemInputList
+        val fluids = controller.notifiedFluidInputList
+        if (items.isEmpty() && fluids.isEmpty()) return false
+        items.clear()
+        fluids.clear()
+        return true
+    }
 
     private fun hasAnyInputStack(): Boolean
     {
