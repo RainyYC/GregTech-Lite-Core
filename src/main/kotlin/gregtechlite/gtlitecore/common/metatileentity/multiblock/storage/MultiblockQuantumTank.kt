@@ -62,7 +62,6 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
             FluidStack.loadFluidStackFromNBT(tag.getCompoundTag("fluid")).also { it?.amount = 1 }!!
         })
 
-    private var isStorageDirty: Boolean = false
 
     private lateinit var importFluids: FluidTankList
     private lateinit var exportFluids: FluidTankList
@@ -169,14 +168,6 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
             if (shouldImport) importFluids()
             if (shouldExport) exportFluids()
         }
-        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, not by
-        // syncing the whole inventory to the client every tick; only the chunk dirty flag is
-        // coalesced to at most once per tick.
-        if (isStorageDirty)
-        {
-            isStorageDirty = false
-            markDirty()
-        }
     }
 
     fun fluidStorage(): QuantumStorageHandler<FluidStack> = storage
@@ -269,7 +260,10 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
 
     private fun markStorageDirty()
     {
-        isStorageDirty = true
+        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, so flag
+        // the chunk immediately: coalescing this to the next tick would widen the window in which
+        // a chunk unload (needsSaving(false) only checks the dirty flag) can drop the change.
+        markDirty()
     }
 
     override fun <T> getCapability(capability: Capability<T>, side: EnumFacing?): T?

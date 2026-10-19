@@ -62,7 +62,6 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
             return@QuantumStorageHandler stack
         })
 
-    private var isStorageDirty: Boolean = false
 
     private lateinit var importItems: ItemHandlerList
     private lateinit var exportItems: ItemHandlerList
@@ -146,14 +145,6 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
         {
             if (shouldImport) importItems()
             if (shouldExport) exportItems()
-        }
-        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, not by
-        // syncing the whole inventory to the client every tick; only the chunk dirty flag is
-        // coalesced to at most once per tick.
-        if (isStorageDirty)
-        {
-            isStorageDirty = false
-            markDirty()
         }
     }
 
@@ -245,7 +236,10 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
 
     private fun markStorageDirty()
     {
-        isStorageDirty = true
+        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, so flag
+        // the chunk immediately: coalescing this to the next tick would widen the window in which
+        // a chunk unload (needsSaving(false) only checks the dirty flag) can drop the change.
+        markDirty()
     }
 
     override fun <T> getCapability(capability: Capability<T>, side: EnumFacing?): T?
