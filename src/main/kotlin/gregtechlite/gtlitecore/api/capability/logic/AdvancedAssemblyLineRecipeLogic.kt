@@ -1,5 +1,6 @@
 package gregtechlite.gtlitecore.api.capability.logic
 
+import gregtech.api.capability.IDataAccessHatch
 import gregtech.api.capability.impl.MultiblockRecipeLogic
 import gregtech.api.metatileentity.multiblock.MultiblockAbility
 import gregtech.api.recipes.Recipe
@@ -28,6 +29,14 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     // so keep one snapshot for the lifetime of this logic instance.
     private var recipeSnapshot: Collection<Recipe>? = null
 
+    // Last successfully locked recipe, re-validated in O(inputs) before any full scan.
+    private var lastRecipe: Recipe? = null
+
+    // Input fingerprint + tick of the last full scan. While nothing observable changes,
+    // repeat scans are skipped; a full scan is still forced every RESCAN_INTERVAL_TICKS.
+    private var lastInputSignature: Int = 0
+    private var lastScanTime: Long = Long.MIN_VALUE / 2
+
     private var currentRecipe: Recipe? = null
     private var sliceEUt: Long = 0L
     private var sliceDuration: Int = 0
@@ -38,6 +47,10 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     companion object
     {
         private const val MAX_SLICES = 16
+
+        // Fallback full scan interval, in ticks (1 second). Guards against any input state
+        // that is not covered by the fingerprint (e.g. research data written into a hatch).
+        private const val RESCAN_INTERVAL_TICKS = 20L
 
         // Slice status: -1: idle, 0: stuck, >0: working
         private const val IDLE = -1
@@ -139,64 +152,145 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         val tanks = controller.getAbilities(MultiblockAbility.IMPORT_FLUIDS)
         val dataHatches = controller.getAbilities(MultiblockAbility.DATA_ACCESS_HATCH)
         val voltage = maxVoltage
+        val checkResearch = ConfigHolder.machines.enableResearch
+
+        // Try the recipe locked last time first: while a player keeps feeding the same job
+        // this hits with an O(inputs) positional check and no table scan at all.
+        val previous = lastRecipe
+        if (previous != null
+                && previous.eUt <= voltage
+                && researchAvailable(previous, dataHatches, checkResearch)
+                && fitsOrderedBuses(previous, buses, tanks))
+        {
+            applyRecipe(previous)
+            return true
+        }
+
+        // Skip the scan entirely when the observable input state did not change since the
+        // last scan. A full scan is still forced once per RESCAN_INTERVAL_TICKS.
+        val signature = inputSignature(buses, tanks, dataHatches, voltage)
+        val now = controller.offsetTimer
+        if (signature == lastInputSignature && now - lastScanTime < RESCAN_INTERVAL_TICKS)
+            return false
+        lastInputSignature = signature
+        lastScanTime = now
 
         for (recipe in assemblyLineRecipes())
         {
-            if (ConfigHolder.machines.enableResearch && recipe.hasProperty(ResearchProperty.getInstance())
-                && dataHatches.none { it.isCreative || it.isRecipeAvailable(recipe) }) continue
-
-            val itemInputs = recipe.inputs
-            if (itemInputs.isEmpty() || buses.size < itemInputs.size) continue
-
-            var itemsOk = true
-            for (i in itemInputs.indices)
-            {
-                val stack = firstValidStack(buses[i]) ?: run { itemsOk = false; null }
-                if (stack == null) break
-                if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount)
-                {
-                    itemsOk = false
-                    break
-                }
-            }
-            if (!itemsOk) continue
-
-            if (!hasAllFluids(recipe.fluidInputs, tanks)) continue
-
+            if (recipe.inputs.isEmpty() || buses.size < recipe.inputs.size) continue
+            if (!researchAvailable(recipe, dataHatches, checkResearch)) continue
             if (recipe.eUt > voltage) continue
-
-            val ocAmount = getNumberOfOCs(recipe.eUt)
-            val ocParams = OCParams()
-            val ocResult = OCResult()
-            val baseDuration = (recipe.duration / itemInputs.size).coerceAtLeast(1)
-            if (ocAmount <= 0)
-            {
-                ocResult.init(recipe.eUt, baseDuration)
-            }
-            else
-            {
-                val inputPower = energyContainer.inputVoltage * energyContainer.inputAmperage
-                val perSliceBudget = (inputPower / itemInputs.size).coerceAtLeast(recipe.eUt)
-                ocParams.initialize(recipe.eUt, baseDuration, ocAmount)
-                modifyOverclockPre(ocParams, recipe.propertyStorage())
-                OverclockingLogic.subTickNonParallelOC(ocParams, ocResult, perSliceBudget,
-                    OverclockingLogic.STD_DURATION_FACTOR, OverclockingLogic.STD_VOLTAGE_FACTOR)
-            }
-            modifyOverclockPost(ocResult, recipe.propertyStorage())
-
-            val eut = ocResult.eut().coerceAtLeast(1L)
-            val duration = ocResult.duration().coerceAtLeast(1)
-
-            currentRecipe = recipe
-            sliceEUt = eut
-            sliceDuration = duration
-            inputCount = itemInputs.size
-            for (slice in slices)
-                slice.reset()
+            if (!fitsOrderedBuses(recipe, buses, tanks)) continue
+            applyRecipe(recipe)
             return true
         }
 
         return false
+    }
+
+    private fun researchAvailable(recipe: Recipe,
+                                  dataHatches: List<IDataAccessHatch>,
+                                  checkResearch: Boolean): Boolean
+    {
+        if (!checkResearch || !recipe.hasProperty(ResearchProperty.getInstance()))
+            return true
+        for (hatch in dataHatches)
+            if (hatch.isCreative || hatch.isRecipeAvailable(recipe))
+                return true
+        return false
+    }
+
+    private fun fitsOrderedBuses(recipe: Recipe,
+                                 buses: List<IItemHandlerModifiable>,
+                                 tanks: List<IFluidTank>): Boolean
+    {
+        val itemInputs = recipe.inputs
+        if (itemInputs.isEmpty() || buses.size < itemInputs.size)
+            return false
+
+        for (i in itemInputs.indices)
+        {
+            val stack = firstValidStack(buses[i]) ?: return false
+            if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount)
+                return false
+        }
+        return hasAllFluids(recipe.fluidInputs, tanks)
+    }
+
+    private fun applyRecipe(recipe: Recipe)
+    {
+        val itemInputs = recipe.inputs
+        val ocAmount = getNumberOfOCs(recipe.eUt)
+        val ocParams = OCParams()
+        val ocResult = OCResult()
+        val baseDuration = (recipe.duration / itemInputs.size).coerceAtLeast(1)
+        if (ocAmount <= 0)
+        {
+            ocResult.init(recipe.eUt, baseDuration)
+        }
+        else
+        {
+            val inputPower = energyContainer.inputVoltage * energyContainer.inputAmperage
+            val perSliceBudget = (inputPower / itemInputs.size).coerceAtLeast(recipe.eUt)
+            ocParams.initialize(recipe.eUt, baseDuration, ocAmount)
+            modifyOverclockPre(ocParams, recipe.propertyStorage())
+            OverclockingLogic.subTickNonParallelOC(ocParams, ocResult, perSliceBudget,
+                OverclockingLogic.STD_DURATION_FACTOR, OverclockingLogic.STD_VOLTAGE_FACTOR)
+        }
+        modifyOverclockPost(ocResult, recipe.propertyStorage())
+
+        currentRecipe = recipe
+        lastRecipe = recipe
+        sliceEUt = ocResult.eut().coerceAtLeast(1L)
+        sliceDuration = ocResult.duration().coerceAtLeast(1)
+        inputCount = itemInputs.size
+        for (slice in slices)
+            slice.reset()
+    }
+
+    /**
+     * Cheap fingerprint of everything that can change whether a recipe can be locked:
+     * the first valid stack of every import bus, every import tank's fluid and amount,
+     * the available voltage and the number of data hatches.
+     */
+    private fun inputSignature(buses: List<IItemHandlerModifiable>,
+                               tanks: List<IFluidTank>,
+                               dataHatches: List<IDataAccessHatch>,
+                               voltage: Long): Int
+    {
+        var hash = 1
+        for (bus in buses)
+        {
+            var signature = 0
+            for (slot in 0 until bus.slots)
+            {
+                val stack = bus.getStackInSlot(slot)
+                if (!stack.isEmpty)
+                {
+                    signature = stackSignature(stack)
+                    break
+                }
+            }
+            hash = 31 * hash + signature
+        }
+        for (tank in tanks)
+        {
+            val fluid = tank.fluid
+            hash = 31 * hash + if (fluid == null) 0
+            else (fluid.fluid?.name?.hashCode() ?: 0) * 31 + fluid.amount
+        }
+        hash = 31 * hash + dataHatches.size
+        hash = 31 * hash + (voltage xor (voltage ushr 32)).toInt()
+        return hash
+    }
+
+    private fun stackSignature(stack: ItemStack): Int
+    {
+        var hash = stack.item.registryName?.hashCode() ?: 0
+        hash = 31 * hash + stack.metadata
+        hash = 31 * hash + stack.count
+        hash = 31 * hash + (stack.tagCompound?.hashCode() ?: 0)
+        return hash
     }
 
     private fun assemblyLineRecipes(): Collection<Recipe> =
@@ -213,6 +307,9 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     private fun unlockRecipe()
     {
         if (currentRecipe == null) return
+        // A locked recipe that no longer fits means the job was switched (or the inputs were
+        // pulled out). Never let a stale fingerprint skip the rescan that follows.
+        invalidateScanMemo()
         currentRecipe = null
         sliceEUt = 0L
         sliceDuration = 0
@@ -364,8 +461,16 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         progressTime = if (first == null) 0 else (first.id + 1) * sliceDuration - first.progress
     }
 
+    private fun invalidateScanMemo()
+    {
+        lastScanTime = Long.MIN_VALUE / 2
+    }
+
     private fun resetPipeline()
     {
+        // Structure/form/working-state changes can alter what is craftable without touching
+        // the inputs we fingerprint, so force a full scan after the pipeline is dropped.
+        invalidateScanMemo()
         currentRecipe = null
         sliceEUt = 0L
         sliceDuration = 0
