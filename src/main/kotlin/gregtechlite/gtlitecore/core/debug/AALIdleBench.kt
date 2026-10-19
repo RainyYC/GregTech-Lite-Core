@@ -9,6 +9,8 @@ import gregtech.api.recipes.Recipe
 import gregtech.api.recipes.ingredients.GTRecipeFluidInput
 import gregtech.api.recipes.properties.impl.ResearchProperty
 import gregtech.api.capability.impl.EnergyContainerList
+import gregtechlite.gtlitecore.api.capability.handler.QuantumStorageHandler
+import gregtechlite.gtlitecore.common.metatileentity.multiblock.MultiblockSpaceElevator
 import gregtech.api.metatileentity.multiblock.RecipeMapMultiblockController
 import gregtech.api.recipes.RecipeMap
 import gregtech.api.recipes.RecipeMaps
@@ -18,8 +20,12 @@ import gregtechlite.gtlitecore.api.capability.logic.AdvancedAssemblyLineRecipeLo
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.advanced.MultiblockAdvancedAssemblyLine
 import net.minecraft.init.Blocks
 import net.minecraft.item.Item
+import net.minecraft.nbt.NBTTagCompound
 import net.minecraft.item.ItemStack
+import gregtech.api.util.ItemStackHashStrategy
+import gregtech.api.util.RelativeDirection
 import net.minecraft.util.EnumFacing
+import net.minecraft.util.math.BlockPos
 import net.minecraft.util.ResourceLocation
 import net.minecraftforge.fml.common.FMLCommonHandler
 import net.minecraftforge.fml.common.event.FMLServerStartedEvent
@@ -28,6 +34,7 @@ import net.minecraftforge.fluids.FluidTankInfo
 import net.minecraftforge.fluids.IFluidTank
 import net.minecraftforge.items.IItemHandlerModifiable
 import org.apache.logging.log4j.LogManager
+import java.math.BigInteger
 import java.util.Locale
 
 /**
@@ -107,6 +114,9 @@ object AALIdleBench
         // H) With materials present: scan, skip and last-recipe fast path.
         benchWithMaterials()
 
+        // S) Space Elevator pattern rebuild + QuantumStorageHandler hot paths.
+        benchElevatorAndStorage()
+
         // E) How many AL recipes actually pass the "bus count" gate with an empty machine?
         logger.info("BENCH E/empty-machine-visible={}", countVisibleWithNoBuses(map))
 
@@ -177,6 +187,127 @@ object AALIdleBench
         }
         return visible
     }
+
+    // region elevator / storage probes
+
+    private fun benchElevatorAndStorage()
+    {
+        // S1: the elevator rebuilds its 52k position pattern every 5s while unformed.
+        val elevator = MultiblockSpaceElevator(ResourceLocation("gtlitecore", "bench_space_elevator"))
+        report("S1/elevator-pattern-build-normal", sample(30, 3) { elevator.reinitializeStructurePattern() })
+
+        val extendedField = MultiblockSpaceElevator::class.java.getDeclaredField("isExtended")
+        extendedField.isAccessible = true
+        extendedField.setBoolean(elevator, true)
+        report("S2/elevator-pattern-build-extended", sample(20, 2) { elevator.reinitializeStructurePattern() })
+        benchOffsetMath()
+
+        // Q: QuantumStorageHandler hot paths at a realistic number of distinct entries.
+        for (distinct in intArrayOf(200, 500, 1000))
+        {
+            val handler = newItemStorage(distinct)
+            report("Q-serialize/" + distinct, sample(30, 3) { handler.serialize() })
+            report("Q-totalStored/" + distinct, sample(30, 3) { handler.totalStored() })
+            report("Q-insertExisting/" + distinct, sample(200, 20) {
+                handler.insert(ItemStack(Item.getItemFromBlock(Blocks.STONE), 1, distinct - 1), BigInteger.ONE)
+            })
+            report("Q-exportScan/" + distinct, sample(30, 3) { exportScan(handler) })
+            report("Q-currentAmount/" + distinct, sample(2000, 200) {
+                handler.currentAmount(ItemStack(Item.getItemFromBlock(Blocks.STONE), 1, distinct - 1))
+            })
+        }
+        verifyStorage()
+    }
+
+    private fun verifyStorage()
+    {
+        val handler = QuantumStorageHandler<ItemStack>(64, BigInteger.TEN.pow(6),
+            strategy = ItemStackHashStrategy.comparingAllButCount(),
+            writeType = { tag, stack ->
+                val nbt = NBTTagCompound()
+                stack.writeToNBT(nbt)
+                tag.setTag("item", nbt)
+            },
+            readType = { tag -> ItemStack(tag.getCompoundTag("item")).also { it.setCount(1) } })
+
+        val stone0 = ItemStack(Item.getItemFromBlock(Blocks.STONE), 1, 0)
+        val stone0Big = ItemStack(Item.getItemFromBlock(Blocks.STONE), 64, 0)
+        val stone1 = ItemStack(Item.getItemFromBlock(Blocks.STONE), 1, 1)
+
+        handler.insert(stone0, BigInteger.TEN)
+        val merged = handler.insert(stone0Big, BigInteger.TEN).toLong()      // same type, "+10"
+        handler.insert(stone1, BigInteger.TEN)                               // different damage -> new entry
+        val afterInsert = handler.distinctSlots() == 2 && handler.totalStored().toLong() == 30L
+
+        val removed = handler.extract(stone0Big, BigInteger.valueOf(4L)).toLong()
+        val afterExtract = removed == 4L && handler.currentAmount(stone0).toLong() == 16L
+                && handler.totalStored().toLong() == 26L
+
+        val tag = handler.serialize()
+        handler.deserialize(tag)
+        val afterRoundTrip = handler.distinctSlots() == 2 && handler.totalStored().toLong() == 26L
+                && handler.currentAmount(stone0).toLong() == 16L
+
+        val shrunk = QuantumStorageHandler<ItemStack>(64, BigInteger.valueOf(20L),
+            strategy = ItemStackHashStrategy.comparingAllButCount(),
+            writeType = { tag, stack ->
+                val nbt = NBTTagCompound()
+                stack.writeToNBT(nbt)
+                tag.setTag("item", nbt)
+            },
+            readType = { tag -> ItemStack(tag.getCompoundTag("item")).also { it.setCount(1) } })
+        shrunk.deserialize(tag)
+        val rebuildRemoved = shrunk.rebuild(1, BigInteger.TEN)
+        val afterRebuild = rebuildRemoved && shrunk.distinctSlots() == 1
+
+        logger.info("BENCH VERIFY insert={} (merged={}) extract={} roundTrip={} rebuild={}",
+                afterInsert, merged == 10L, afterExtract, afterRoundTrip, afterRebuild)
+    }
+
+    /** Non-world part of one full structure match: relative offset math + a BlockPos per position. */
+    private fun benchOffsetMath()
+    {
+        val dirs = arrayOf(RelativeDirection.RIGHT, RelativeDirection.DOWN, RelativeDirection.FRONT)
+        var sink = 0L
+        report("S3/pattern-position-math-52675", sample(30, 3) {
+            for (c in 0 until 35)
+                for (b in 0 until 43)
+                    for (a in 0 until 35)
+                        sink += RelativeDirection.setActualRelativeOffset(a, b, c, EnumFacing.NORTH,
+                                EnumFacing.UP, false, dirs).toLong()
+        })
+        logger.info("BENCH S3/sink={}", sink)
+    }
+
+    private fun newItemStorage(distinct: Int): QuantumStorageHandler<ItemStack>
+    {
+        val handler = QuantumStorageHandler<ItemStack>(4096, BigInteger.TEN.pow(12),
+            strategy = ItemStackHashStrategy.comparingAllButCount(),
+            writeType = { tag, stack ->
+                val nbt = NBTTagCompound()
+                stack.writeToNBT(nbt)
+                tag.setTag("item", nbt)
+            },
+            readType = { tag -> ItemStack(tag.getCompoundTag("item")).also { it.setCount(1) } })
+        for (i in 0 until distinct)
+        {
+            val stack = ItemStack(Item.getItemFromBlock(Blocks.STONE), 1, i)
+            handler.insert(stack, BigInteger.valueOf(1000))
+        }
+        return handler
+    }
+
+    /** What MultiblockQuantumChest#exportItems does every second, minus the actual insertion. */
+    private fun exportScan(handler: QuantumStorageHandler<ItemStack>): Int
+    {
+        var moved = 0
+        // Mirrors the patched export loop: one snapshot, no per-entry re-lookup.
+        for ((stack, available) in handler.entries())
+            if (available.signum() > 0) moved += stack.count
+        return moved
+    }
+
+    // endregion
 
     // region with-materials scenarios
 
