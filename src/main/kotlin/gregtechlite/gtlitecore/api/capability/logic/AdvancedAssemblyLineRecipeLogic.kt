@@ -24,6 +24,10 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
 {
     private val slices = Array(MAX_SLICES) { Slice(it) }
 
+    // BENCH-FIX: RecipeMap#getRecipeList rebuilds + sorts the whole map on every call,
+    // so keep one snapshot for the lifetime of this logic instance.
+    private var recipeSnapshot: Collection<Recipe>? = null
+
     private var currentRecipe: Recipe? = null
     private var sliceEUt: Long = 0L
     private var sliceDuration: Int = 0
@@ -113,7 +117,9 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             if (currentRecipe == null || !recipeInputsPresent())
             {
                 unlockRecipe()
-                tryLockRecipe()
+                // BENCH-FIX: an empty set of import buses can never match a recipe
+                // (recipes without item inputs are skipped anyway), so skip the scan.
+                if (hasAnyInputStack()) tryLockRecipe()
             }
             startCycle()
         }
@@ -134,7 +140,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         val dataHatches = controller.getAbilities(MultiblockAbility.DATA_ACCESS_HATCH)
         val voltage = maxVoltage
 
-        for (recipe in RecipeMaps.ASSEMBLY_LINE_RECIPES.recipeList)
+        for (recipe in assemblyLineRecipes())
         {
             if (ConfigHolder.machines.enableResearch && recipe.hasProperty(ResearchProperty.getInstance())
                 && dataHatches.none { it.isCreative || it.isRecipeAvailable(recipe) }) continue
@@ -190,6 +196,17 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             return true
         }
 
+        return false
+    }
+
+    private fun assemblyLineRecipes(): Collection<Recipe> =
+        recipeSnapshot ?: RecipeMaps.ASSEMBLY_LINE_RECIPES.recipeList.also { recipeSnapshot = it }
+
+    private fun hasAnyInputStack(): Boolean
+    {
+        for (bus in controller.getAbilities(MultiblockAbility.IMPORT_ITEMS))
+            for (slot in 0 until bus.slots)
+                if (!bus.getStackInSlot(slot).isEmpty) return true
         return false
     }
 
