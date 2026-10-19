@@ -18,6 +18,7 @@ import gregtech.api.metatileentity.multiblock.ui.MultiblockUIBuilder
 import gregtech.api.pattern.BlockPattern
 import gregtech.api.pattern.FactoryBlockPattern
 import gregtech.api.pattern.PatternMatchContext
+import gregtech.api.util.ItemStackHashStrategy
 import gregtech.api.util.KeyUtil
 import gregtech.client.renderer.ICubeRenderer
 import gregtech.client.renderer.texture.Textures
@@ -50,7 +51,7 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
     override val syncer: MetaTileEntitySyncer = MetaTileEntitySyncer(this)
 
     private var storage: QuantumStorageHandler<ItemStack> = QuantumStorageHandler(0, BigInteger.ZERO,
-        isSameType = { a, b -> a.isItemEqual(b) && ItemStack.areItemStackTagsEqual(a, b) },
+        strategy = ItemStackHashStrategy.comparingAllButCount(),
         writeType = { tag, stack ->
             val nbt = NBTTagCompound()
             stack.writeToNBT(nbt)
@@ -61,7 +62,6 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
             return@QuantumStorageHandler stack
         })
 
-    private var storageSync by syncer.syncedNBT(NBTTagCompound())
     private var isStorageDirty: Boolean = false
 
     private lateinit var importItems: ItemHandlerList
@@ -76,6 +76,9 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
         private val casingState = GTComputerCasing.COMPUTER_CASING.state
         private val secondCasingState = GTComputerCasing.COMPUTER_HEAT_VENT.state
         private val glassCasingState = GTGlassCasing.FUSION_GLASS.state
+
+        private const val STORAGE_TAG = "quantum_storage"
+        private const val LEGACY_STORAGE_FIELD = "storageSync"
     }
 
     override fun createMetaTileEntity(te: IGregTechTileEntity): MetaTileEntity = MultiblockQuantumChest(metaTileEntityId)
@@ -144,12 +147,14 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
             if (shouldImport) importItems()
             if (shouldExport) exportItems()
         }
+        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, not by
+        // syncing the whole inventory to the client every tick; only the chunk dirty flag is
+        // coalesced to at most once per tick.
         if (isStorageDirty)
         {
-            storageSync = storage.serialize()
             isStorageDirty = false
+            markDirty()
         }
-        syncer.flushChanges()
     }
 
     fun itemStorage(): QuantumStorageHandler<ItemStack> = storage
@@ -205,10 +210,10 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
 
     private fun exportItems()
     {
-        val stacks = storage.entries().map { it.key }
-        for (stack in stacks)
+        // Snapshot key/amount pairs instead of re-looking every key up: currentAmount(key) used
+        // to be an O(distinct) scan, which made one export pass O(distinct^2).
+        for ((stack, availableStack) in storage.entries())
         {
-            val availableStack = storage.currentAmount(stack)
             if (availableStack.signum() <= 0) continue
 
             var stackToMove = minOf(availableStack, BigInteger.valueOf(Integer.MAX_VALUE.toLong()))
@@ -241,7 +246,6 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
     private fun markStorageDirty()
     {
         isStorageDirty = true
-        markDirty()
     }
 
     override fun <T> getCapability(capability: Capability<T>, side: EnumFacing?): T?
@@ -261,10 +265,20 @@ class MultiblockQuantumChest(id: ResourceLocation) : MultiblockWithDisplayBase(i
 
     override fun isActive(): Boolean = _isWorkingEnabled && isStructureFormed
 
+    override fun writeToNBT(data: NBTTagCompound): NBTTagCompound?
+    {
+        data.setTag(STORAGE_TAG, storage.serialize())
+        return super.writeToNBT(data)
+    }
+
     override fun readFromNBT(data: NBTTagCompound)
     {
         super.readFromNBT(data)
-        storage.deserialize(storageSync)
+        // Contents used to live in the synced "storageSync" field, which was persisted under the
+        // syncer's "GTSync" tag; keep reading that so existing worlds do not lose their contents.
+        val contents = if (data.hasKey(STORAGE_TAG)) data.getCompoundTag(STORAGE_TAG)
+        else data.getCompoundTag(MetaTileEntitySyncer.NBT_KEY).getCompoundTag(LEGACY_STORAGE_FIELD)
+        storage.deserialize(contents)
     }
 
     override fun shouldShowVoidingModeButton() = true

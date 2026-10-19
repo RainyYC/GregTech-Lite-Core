@@ -19,6 +19,7 @@ import gregtech.api.pattern.BlockPattern
 import gregtech.api.pattern.FactoryBlockPattern
 import gregtech.api.pattern.PatternMatchContext
 import gregtech.api.util.KeyUtil
+import it.unimi.dsi.fastutil.Hash
 import gregtech.api.util.RelativeDirection.FRONT
 import gregtech.api.util.RelativeDirection.RIGHT
 import gregtech.api.util.RelativeDirection.UP
@@ -51,7 +52,7 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
     override val syncer: MetaTileEntitySyncer = MetaTileEntitySyncer(this)
 
     private var storage: QuantumStorageHandler<FluidStack> = QuantumStorageHandler(0, BigInteger.ZERO,
-        isSameType = { a, b -> a.isFluidEqual(b) },
+        strategy = FLUID_HASH_STRATEGY,
         writeType = { tag, fluid ->
             val nbt = NBTTagCompound()
             fluid.writeToNBT(nbt)
@@ -61,7 +62,6 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
             FluidStack.loadFluidStackFromNBT(tag.getCompoundTag("fluid")).also { it?.amount = 1 }!!
         })
 
-    private var storageSync by syncer.syncedNBT(NBTTagCompound())
     private var isStorageDirty: Boolean = false
 
     private lateinit var importFluids: FluidTankList
@@ -76,6 +76,28 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
         private val casingState = GTComputerCasing.COMPUTER_CASING.state
         private val secondCasingState = GTComputerCasing.COMPUTER_HEAT_VENT.state
         private val glassCasingState = GTGlassCasing.FUSION_GLASS.state
+
+        private const val STORAGE_TAG = "quantum_storage"
+        private const val LEGACY_STORAGE_FIELD = "storageSync"
+
+        /** Same semantics as [FluidStack.isFluidEqual], but usable as a map hash strategy. */
+        private val FLUID_HASH_STRATEGY = object : Hash.Strategy<FluidStack>
+        {
+            override fun hashCode(stack: FluidStack?): Int
+            {
+                if (stack == null) return 0
+                var hash = stack.fluid?.name?.hashCode() ?: 0
+                hash = 31 * hash + (stack.tag?.hashCode() ?: 0)
+                return hash
+            }
+
+            override fun equals(a: FluidStack?, b: FluidStack?): Boolean
+            {
+                if (a === b) return true
+                if (a == null || b == null) return false
+                return a.isFluidEqual(b)
+            }
+        }
     }
 
     override fun createMetaTileEntity(te: IGregTechTileEntity): MetaTileEntity = MultiblockQuantumTank(metaTileEntityId)
@@ -147,12 +169,14 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
             if (shouldImport) importFluids()
             if (shouldExport) exportFluids()
         }
+        // Contents are persisted through writeToNBT/readFromNBT when the chunk is saved, not by
+        // syncing the whole inventory to the client every tick; only the chunk dirty flag is
+        // coalesced to at most once per tick.
         if (isStorageDirty)
         {
-            storageSync = storage.serialize()
             isStorageDirty = false
+            markDirty()
         }
-        syncer.flushChanges()
     }
 
     fun fluidStorage(): QuantumStorageHandler<FluidStack> = storage
@@ -207,10 +231,10 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
 
     private fun exportFluids()
     {
-        val fluids = storage.entries().map { it.key }
-        for (fluid in fluids)
+        // Snapshot key/amount pairs instead of re-looking every key up: currentAmount(key) used
+        // to be an O(distinct) scan, which made one export pass O(distinct^2).
+        for ((fluid, available) in storage.entries())
         {
-            val available = storage.currentAmount(fluid)
             if (available.signum() <= 0) continue
 
             var fluidToMove = minOf(available, BigInteger.valueOf(Integer.MAX_VALUE.toLong()))
@@ -246,7 +270,6 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
     private fun markStorageDirty()
     {
         isStorageDirty = true
-        markDirty()
     }
 
     override fun <T> getCapability(capability: Capability<T>, side: EnumFacing?): T?
@@ -266,10 +289,20 @@ class MultiblockQuantumTank(id: ResourceLocation) : MultiblockWithDisplayBase(id
 
     override fun isActive(): Boolean = _isWorkingEnabled && isStructureFormed
 
+    override fun writeToNBT(data: NBTTagCompound): NBTTagCompound?
+    {
+        data.setTag(STORAGE_TAG, storage.serialize())
+        return super.writeToNBT(data)
+    }
+
     override fun readFromNBT(data: NBTTagCompound)
     {
         super.readFromNBT(data)
-        storage.deserialize(storageSync)
+        // Contents used to live in the synced "storageSync" field, which was persisted under the
+        // syncer's "GTSync" tag; keep reading that so existing worlds do not lose their contents.
+        val contents = if (data.hasKey(STORAGE_TAG)) data.getCompoundTag(STORAGE_TAG)
+        else data.getCompoundTag(MetaTileEntitySyncer.NBT_KEY).getCompoundTag(LEGACY_STORAGE_FIELD)
+        storage.deserialize(contents)
     }
 
     override fun shouldShowVoidingModeButton() = true
