@@ -10,6 +10,7 @@ import gregtech.api.recipes.ingredients.GTRecipeFluidInput
 import gregtech.api.recipes.properties.impl.ResearchProperty
 import gregtech.api.capability.impl.EnergyContainerList
 import gregtech.api.capability.impl.FluidTankList
+import gregtech.api.capability.impl.ItemHandlerList
 import gregtech.api.metatileentity.IVoidable
 import gregtech.api.recipes.RecipeBuilder
 import gregtech.api.recipes.logic.ParallelLogic
@@ -125,6 +126,9 @@ object AALIdleBench
         // O) One-tick overclock (sub-tick parallel) per-tick cost.
         benchOneTickOverclock()
 
+        // C) GTLite color channel search: per-search rebuild cost.
+        benchChannelRebuild()
+
         // E) How many AL recipes actually pass the "bus count" gate with an empty machine?
         logger.info("BENCH E/empty-machine-visible={}", countVisibleWithNoBuses(map))
 
@@ -195,6 +199,67 @@ object AALIdleBench
         }
         return visible
     }
+
+    // region color channel search probes
+
+    /**
+     * Rebuild cost of the per-channel caches that
+     * MixinMultiblockRecipeLogic#trySearchNewRecipeByChannel() redoes on every recipe search.
+     */
+    private fun benchChannelRebuild()
+    {
+        val map = RecipeMaps.MACERATOR_RECIPES
+        val recipe = map.recipeList.firstOrNull { it.inputs.size == 1 } ?: run {
+            logger.warn("BENCH C skipped: no single-input recipe")
+            return
+        }
+        val template = recipe.inputs[0].inputStacks.firstOrNull { !it.isEmpty } ?: run {
+            logger.warn("BENCH C skipped: recipe has no concrete input")
+            return
+        }
+
+        for (slotsPerBus in intArrayOf(16, 64))
+        {
+            val buses = List(4) { FakeBusOf(slotsPerBus).apply { setStackInSlot(0, template.copy()) } }
+            val tanks = List(2) { FakeTank() }
+            val prefix = "C/bus${slotsPerBus}x4"
+
+            report("$prefix/ItemHandlerList", sample(200, 20) { ItemHandlerList(buses) })
+            report("$prefix/FluidTankList", sample(500, 50) { FluidTankList(true, tanks) })
+
+            val items = ItemHandlerList(buses)
+            val fluids = FluidTankList(true, tanks)
+            report("$prefix/previousRecipe.matches", sample(500, 50) {
+                recipe.matches(false, items, fluids)
+            })
+            report("$prefix/AbilityInstances+cast", sample(2000, 200) {
+                val instances = AbilityInstances(MultiblockAbility.IMPORT_ITEMS)
+                instances.add(buses[0])
+                instances.cast<Any>()
+            })
+        }
+
+        // The per-part scan itself: 40 parts, each with an abilities list to inspect.
+        val partAbilities = List(40) { listOf(MultiblockAbility.IMPORT_ITEMS) }
+        report("C/part-scan-40", sample(500, 50) {
+            var itemCount = 0
+            for (abilities in partAbilities)
+                if (abilities.contains(MultiblockAbility.IMPORT_ITEMS)) itemCount++
+        })
+    }
+
+    private class FakeBusOf(private val slotCount: Int) : IItemHandlerModifiable
+    {
+        private val stacks = Array(slotCount) { ItemStack.EMPTY }
+        override fun getSlots() = stacks.size
+        override fun getStackInSlot(slot: Int) = stacks[slot]
+        override fun insertItem(slot: Int, stack: ItemStack, simulate: Boolean) = stack
+        override fun extractItem(slot: Int, amount: Int, simulate: Boolean) = ItemStack.EMPTY
+        override fun getSlotLimit(slot: Int) = Int.MAX_VALUE
+        override fun setStackInSlot(slot: Int, stack: ItemStack) { stacks[slot] = stack }
+    }
+
+    // endregion
 
     // region one-tick overclock probes
 
