@@ -26,6 +26,7 @@ import gregtech.api.pattern.FactoryBlockPattern
 import gregtech.client.renderer.ICubeRenderer
 import gregtech.client.renderer.texture.Textures
 import gregtech.api.util.GTTransferUtils
+import gregtech.common.ConfigHolder
 import gregtechlite.gtlitecore.api.capability.handler.QuantumStorageHandler
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.MultiblockSpaceElevator
 import gregtech.api.metatileentity.multiblock.RecipeMapMultiblockController
@@ -541,6 +542,53 @@ object AALIdleBench
         verifyStorage()
     }
 
+    /**
+     * Research data does not change the item/fluid fingerprint, so the lookup must be invalidated
+     * by GT's notified handler lists: inserting a data orb has to re-lock in the same tick.
+     */
+    private fun verifyResearchNotification(voltage: Long)
+    {
+        if (!ConfigHolder.machines.enableResearch)
+        {
+            logger.warn("BENCH VERIFY-research skipped: research is disabled")
+            return
+        }
+
+        val research = RecipeMaps.ASSEMBLY_LINE_RECIPES.recipeList.firstOrNull { recipe ->
+            recipe.hasProperty(ResearchProperty.getInstance())
+                    && recipe.inputs.isNotEmpty() && recipe.inputs.size <= 8
+                    && recipe.fluidInputs.size <= 4
+                    && recipe.inputs.all { it.inputStacks.isNotEmpty() }
+                    && recipe.fluidInputs.all { it is GTRecipeFluidInput }
+        } ?: run {
+            logger.warn("BENCH VERIFY-research skipped: no research recipe")
+            return
+        }
+
+        val hatch = FakeDataHatch(false)
+        val controller = newController("aal_bench_research", voltage, hatch)
+        val buses = List(research.inputs.size) { FakeBus() }
+        val tanks = List(research.fluidInputs.size) { FakeTank() }
+        injectBuses(controller, buses)
+        injectTanks(controller, tanks)
+        loadInputs(research, buses, tanks)
+        val logic = controller.recipeMapWorkable as AdvancedAssemblyLineRecipeLogic
+
+        logic.updateWorkable()
+        val blockedWhileUnavailable = lockedRecipe(logic) == null
+
+        hatch.available = true
+        logic.updateWorkable()
+        val blockedWithoutNotification = lockedRecipe(logic) == null
+
+        controller.addNotifiedInput(buses[0])
+        logic.updateWorkable()
+        val lockedAfterNotification = lockedRecipe(logic) === research
+
+        logger.info("BENCH VERIFY-research blockedWhileUnavailable={} blockedWithoutNotify={} lockedAfterNotify={}",
+                blockedWhileUnavailable, blockedWithoutNotification, lockedAfterNotification)
+    }
+
     private fun verifyStorage()
     {
         val handler = QuantumStorageHandler<ItemStack>(64, BigInteger.TEN.pow(6),
@@ -702,6 +750,8 @@ object AALIdleBench
         report("H3/switch-recipe", switchCost)
         logger.info("BENCH H3/switched-to-next-recipe={} (a===b: {})", switched, a === b)
 
+        verifyResearchNotification(voltage)
+
         // H4: no match at all -> first call scans, repeats are skipped by the fingerprint memo.
         val h4 = newController("aal_bench_h4", voltage)
         val buses4 = List(8) { FakeBus() }
@@ -788,7 +838,8 @@ object AALIdleBench
         abilities[MultiblockAbility.IMPORT_FLUIDS] = instances
     }
 
-    private fun newController(id: String, voltage: Long): MultiblockAdvancedAssemblyLine
+    private fun newController(id: String, voltage: Long,
+                              hatch: FakeDataHatch = FakeDataHatch()): MultiblockAdvancedAssemblyLine
     {
         val controller = MultiblockAdvancedAssemblyLine(ResourceLocation("gtlitecore", id))
         val energyField = RecipeMapMultiblockController::class.java.getDeclaredField("energyContainer")
@@ -800,7 +851,7 @@ object AALIdleBench
         val abilities = abilitiesField.get(controller)
                 as MutableMap<MultiblockAbility<*>, AbilityInstances>
         val hatches = AbilityInstances(MultiblockAbility.DATA_ACCESS_HATCH)
-        hatches.add(FakeDataHatch())
+        hatches.add(hatch)
         abilities[MultiblockAbility.DATA_ACCESS_HATCH] = hatches
         return controller
     }
@@ -830,10 +881,10 @@ object AALIdleBench
         override fun setStackInSlot(slot: Int, stack: ItemStack) {}
     }
 
-    private class FakeDataHatch : IDataAccessHatch
+    private class FakeDataHatch(var available: Boolean = true) : IDataAccessHatch
     {
-        override fun isRecipeAvailable(recipe: Recipe, seen: MutableCollection<IDataAccessHatch>) = true
-        override fun isCreative() = true
+        override fun isRecipeAvailable(recipe: Recipe, seen: MutableCollection<IDataAccessHatch>) = available
+        override fun isCreative() = false
     }
 
     private class FakeTank : IFluidTank
