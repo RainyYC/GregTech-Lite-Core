@@ -9,6 +9,11 @@ import gregtech.api.recipes.Recipe
 import gregtech.api.recipes.ingredients.GTRecipeFluidInput
 import gregtech.api.recipes.properties.impl.ResearchProperty
 import gregtech.api.capability.impl.EnergyContainerList
+import gregtech.api.capability.impl.FluidTankList
+import gregtech.api.metatileentity.IVoidable
+import gregtech.api.recipes.RecipeBuilder
+import gregtech.api.recipes.logic.ParallelLogic
+import gregtech.api.util.GTTransferUtils
 import gregtechlite.gtlitecore.api.capability.handler.QuantumStorageHandler
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.MultiblockSpaceElevator
 import gregtech.api.metatileentity.multiblock.RecipeMapMultiblockController
@@ -117,6 +122,9 @@ object AALIdleBench
         // S) Space Elevator pattern rebuild + QuantumStorageHandler hot paths.
         benchElevatorAndStorage()
 
+        // O) One-tick overclock (sub-tick parallel) per-tick cost.
+        benchOneTickOverclock()
+
         // E) How many AL recipes actually pass the "bus count" gate with an empty machine?
         logger.info("BENCH E/empty-machine-visible={}", countVisibleWithNoBuses(map))
 
@@ -187,6 +195,105 @@ object AALIdleBench
         }
         return visible
     }
+
+    // region one-tick overclock probes
+
+    private fun benchOneTickOverclock()
+    {
+        val map = RecipeMaps.MACERATOR_RECIPES
+        val input = ItemStack(Item.getItemFromBlock(Blocks.COBBLESTONE), 1, 0)
+        val output = ItemStack(Item.getItemFromBlock(Blocks.SAND), 1, 0)
+        val recipe = map.recipeBuilder()
+                .inputs(input)
+                .outputs(output)
+                .duration(1)
+                .EUt(30L)
+                .build().result ?: run {
+            logger.warn("BENCH O skipped: could not build a recipe")
+            return
+        }
+
+        val inputBus = BufferBus(input, 1 shl 20)
+        val outputBus = VoidBus()
+        val inputFluids = FluidTankList(true, emptyList())
+        val outputFluids = FluidTankList(true, emptyList())
+        val voidable = object : IVoidable
+        {
+            override fun canVoidRecipeItemOutputs() = false
+            override fun canVoidRecipeFluidOutputs() = false
+        }
+        val maxVoltage = Long.MAX_VALUE / 8
+
+        // Per-tick parallel search, the core of a 1-tick overclocked recipe.
+        for (parallel in intArrayOf(1, 16, 64, 256, 1024))
+        {
+            report("O/doParallel-$parallel", sample(30, 3) {
+                ParallelLogic.doParallelRecipes(recipe, map, inputBus, inputFluids, outputBus, outputFluids,
+                        parallel, maxVoltage, voidable)
+            })
+        }
+
+        // The rest of one tick: recipe copy, output space check, input consumption.
+        // (RecipeBuilder(recipe, map) cannot be used here: its fluent methods cast `this` to the
+        // map's concrete builder type, which throws for a base RecipeBuilder instance.)
+        report("O/recipeCopy", sample(50, 5) { recipe.copy() })
+
+        val builder = ParallelLogic.doParallelRecipes(recipe, map, inputBus, inputFluids, outputBus,
+                outputFluids, 1024, maxVoltage, voidable)
+        val multiplied = builder?.build()?.result
+        if (multiplied == null)
+        {
+            logger.warn("BENCH O: 1024 parallel did not produce a recipe")
+            return
+        }
+        logger.info("BENCH O/multiplied parallel={} outputsListSize={} eut={} duration={}",
+                builder.parallel, multiplied.allItemOutputs.size, multiplied.eUt, multiplied.duration)
+        report("O/outputSpaceCheck-1024", sample(50, 5) {
+            GTTransferUtils.addItemsToItemHandler(outputBus, true, multiplied.allItemOutputs)
+        })
+        report("O/consumeInputs-1024", sample(50, 5) {
+            inputBus.refill()
+            multiplied.matches(true, inputBus, inputFluids)
+        })
+    }
+
+    /** Input handler holding a large amount of one stack, refilled between samples. */
+    private class BufferBus(private val template: ItemStack, private val count: Int) : IItemHandlerModifiable
+    {
+        private val stacks = Array(4) { ItemStack.EMPTY }
+        init { refill() }
+        fun refill() { stacks[0] = template.copy().also { it.count = count } }
+        override fun getSlots() = stacks.size
+        override fun getStackInSlot(slot: Int) = stacks[slot]
+        override fun insertItem(slot: Int, stack: ItemStack, simulate: Boolean) = stack
+        override fun extractItem(slot: Int, amount: Int, simulate: Boolean): ItemStack
+        {
+            val stack = stacks[slot]
+            if (stack.isEmpty) return ItemStack.EMPTY
+            val taken = minOf(amount, stack.count)
+            if (!simulate)
+            {
+                if (taken >= stack.count) stacks[slot] = ItemStack.EMPTY
+                else stack.shrink(taken)
+            }
+            return stack.copy().also { it.count = taken }
+        }
+        override fun getSlotLimit(slot: Int) = Int.MAX_VALUE
+        override fun setStackInSlot(slot: Int, stack: ItemStack) { stacks[slot] = stack }
+    }
+
+    /** Output handler that accepts everything, so only the simulation cost is measured. */
+    private class VoidBus : IItemHandlerModifiable
+    {
+        override fun getSlots() = 4
+        override fun getStackInSlot(slot: Int) = ItemStack.EMPTY
+        override fun insertItem(slot: Int, stack: ItemStack, simulate: Boolean) = ItemStack.EMPTY
+        override fun extractItem(slot: Int, amount: Int, simulate: Boolean) = ItemStack.EMPTY
+        override fun getSlotLimit(slot: Int) = Int.MAX_VALUE
+        override fun setStackInSlot(slot: Int, stack: ItemStack) {}
+    }
+
+    // endregion
 
     // region elevator / storage probes
 
