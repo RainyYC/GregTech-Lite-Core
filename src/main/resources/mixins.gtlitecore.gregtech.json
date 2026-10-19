@@ -34,6 +34,7 @@
     "MixinMetaTileEntityLargeTurbine",
     "MixinMultiblockControllerBase",
     "MixinMultiblockRecipeLogic",
+    "MixinAbstractRecipeLogicSubTickCache",
     "MixinBQuDataFixer",
     "MixinMetaTileEntityPowerSubstation",
     "MixinTextFormattingUtil",
