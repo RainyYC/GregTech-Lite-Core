@@ -1,6 +1,13 @@
 package gregtechlite.gtlitecore.core.debug
 
+import gregtech.api.capability.IDataAccessHatch
 import gregtech.api.capability.IEnergyContainer
+import gregtech.api.metatileentity.multiblock.AbilityInstances
+import gregtech.api.metatileentity.multiblock.MultiblockAbility
+import gregtech.api.metatileentity.multiblock.MultiblockControllerBase
+import gregtech.api.recipes.Recipe
+import gregtech.api.recipes.ingredients.GTRecipeFluidInput
+import gregtech.api.recipes.properties.impl.ResearchProperty
 import gregtech.api.capability.impl.EnergyContainerList
 import gregtech.api.metatileentity.multiblock.RecipeMapMultiblockController
 import gregtech.api.recipes.RecipeMap
@@ -9,9 +16,17 @@ import gregtech.api.recipes.map.Branch
 import gregtech.api.recipes.map.Either
 import gregtechlite.gtlitecore.api.capability.logic.AdvancedAssemblyLineRecipeLogic
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.advanced.MultiblockAdvancedAssemblyLine
+import net.minecraft.init.Blocks
+import net.minecraft.item.Item
+import net.minecraft.item.ItemStack
+import net.minecraft.util.EnumFacing
 import net.minecraft.util.ResourceLocation
 import net.minecraftforge.fml.common.FMLCommonHandler
 import net.minecraftforge.fml.common.event.FMLServerStartedEvent
+import net.minecraftforge.fluids.FluidStack
+import net.minecraftforge.fluids.FluidTankInfo
+import net.minecraftforge.fluids.IFluidTank
+import net.minecraftforge.items.IItemHandlerModifiable
 import org.apache.logging.log4j.LogManager
 import java.util.Locale
 
@@ -89,6 +104,9 @@ object AALIdleBench
         }
         controller.isPipelineMode = true
 
+        // H) With materials present: scan, skip and last-recipe fast path.
+        benchWithMaterials()
+
         // E) How many AL recipes actually pass the "bus count" gate with an empty machine?
         logger.info("BENCH E/empty-machine-visible={}", countVisibleWithNoBuses(map))
 
@@ -159,6 +177,243 @@ object AALIdleBench
         }
         return visible
     }
+
+    // region with-materials scenarios
+
+    private fun benchWithMaterials()
+    {
+        val map = RecipeMaps.ASSEMBLY_LINE_RECIPES
+        val voltage = Long.MAX_VALUE / 8
+
+        // H1: imports present but matching nothing -> forces the full scan path.
+        val h1 = newController("aal_bench_h1", voltage)
+        val buses1 = List(8) { FakeBus() }
+        buses1[0].stacks[0] = ItemStack(Item.getItemFromBlock(Blocks.STONE), 1)
+        injectBuses(h1, buses1)
+        val logic1 = h1.recipeMapWorkable as AdvancedAssemblyLineRecipeLogic
+
+        var toggle = 0
+        report("H1a/full-scan-no-match", sample(100, 5) {
+            toggle++
+            buses1[0].stacks[0].count = 1 + (toggle % 2)   // 改签名，强制重扫
+            logic1.updateWorkable()
+        })
+        report("H1b/skip-unchanged-inputs", sample(600, 100) { logic1.updateWorkable() })
+
+        // H2/H3: recipes that can actually be locked (fake buses + fake tanks).
+        val recipes = pickRecipes(map, voltage, 2)
+        if (recipes.isEmpty())
+        {
+            logger.warn("BENCH H2/H3 skipped: no usable recipe")
+            return
+        }
+        val a = recipes[0]
+        val b = if (recipes.size > 1) recipes[1] else a
+
+        val h2 = newController("aal_bench_h2", voltage)
+        val busCount = maxOf(a.inputs.size, b.inputs.size)
+        val tankCount = maxOf(a.fluidInputs.size, b.fluidInputs.size)
+        val buses2 = List(busCount) { FakeBus() }
+        val tanks2 = List(tankCount) { FakeTank() }
+        injectBuses(h2, buses2)
+        injectTanks(h2, tanks2)
+        loadInputs(a, buses2, tanks2)
+        val logic2 = h2.recipeMapWorkable as AdvancedAssemblyLineRecipeLogic
+
+        val start = System.nanoTime()
+        logic2.updateWorkable()
+        logger.info("BENCH H2a/first-lock={}us items={} fluids={} locked={}",
+                us((System.nanoTime() - start).toDouble()), a.inputs.size, a.fluidInputs.size,
+                lockedRecipe(logic2) === a)
+
+        // Isolate the three costs: overclock math, last-recipe fast path, full scan.
+        val tryLock: java.lang.reflect.Method = AdvancedAssemblyLineRecipeLogic::class.java
+                .getDeclaredMethod("tryLockRecipe").apply { isAccessible = true }
+        val applyRecipe: java.lang.reflect.Method = AdvancedAssemblyLineRecipeLogic::class.java
+                .getDeclaredMethod("applyRecipe", Recipe::class.java).apply { isAccessible = true }
+
+        report("H2b/applyRecipe-only", sample(600, 50) { applyRecipe.invoke(logic2, a) })
+        report("H2c/last-recipe-fast-path", sample(600, 50) { tryLock.invoke(logic2) })
+
+        // H3: switch the job while no pipeline is in flight; the memo must not block the scan.
+        loadInputs(a, buses2, tanks2)
+        tryLock.invoke(logic2)
+        var switched = false
+        val switchCost = sample(200, 10) {
+            loadInputs(b, buses2, tanks2)
+            tryLock.invoke(logic2)
+            switched = lockedRecipe(logic2) === b
+            loadInputs(a, buses2, tanks2)
+            tryLock.invoke(logic2)
+        }
+        report("H3/switch-recipe", switchCost)
+        logger.info("BENCH H3/switched-to-next-recipe={} (a===b: {})", switched, a === b)
+
+        // H4: no match at all -> first call scans, repeats are skipped by the fingerprint memo.
+        val h4 = newController("aal_bench_h4", voltage)
+        val buses4 = List(8) { FakeBus() }
+        buses4[0].stacks[0] = ItemStack(Item.getItemFromBlock(Blocks.STONE), 1)
+        injectBuses(h4, buses4)
+        val logic4 = h4.recipeMapWorkable as AdvancedAssemblyLineRecipeLogic
+        var toggle4 = 0
+        report("H4a/forced-rescan", sample(100, 5) {
+            toggle4++
+            buses4[0].stacks[0].count = 1 + (toggle4 % 2)
+            tryLock.invoke(logic4)
+        })
+        report("H4b/memo-skip", sample(600, 100) { tryLock.invoke(logic4) })
+    }
+
+    private fun pickRecipes(map: RecipeMap<*>, voltage: Long, count: Int): List<Recipe>
+    {
+        val picked = ArrayList<Recipe>(count)
+        var total = 0
+        var inputSize = 0
+        var fluidSize = 0
+        var research = 0
+        var stacks = 0
+        var fluidType = 0
+        for (recipe in map.recipeList)
+        {
+            if (picked.size >= count) break
+            total++
+            if (recipe.inputs.size !in 1..8) continue
+            inputSize++
+            if (recipe.fluidInputs.size > 4) continue
+            fluidSize++
+            if (recipe.eUt > voltage) continue
+            if (recipe.hasProperty(ResearchProperty.getInstance())) research++
+            if (recipe.inputs.any { it.inputStacks.isEmpty() }) { stacks++; continue }
+            if (recipe.fluidInputs.any { it !is GTRecipeFluidInput }) { fluidType++; continue }
+            if (picked.any { it == recipe }) continue
+            // skip recipes whose item signature collides with an already picked one
+            val sameInputs = picked.any { p ->
+                p.inputs.size == recipe.inputs.size &&
+                p.inputs.indices.all { p.inputs[it].inputStacks.size == recipe.inputs[it].inputStacks.size }
+            }
+            if (sameInputs) continue
+            picked.add(recipe)
+        }
+        logger.info("BENCH picker: total={} inputSize={} fluidSize={} research={} emptyStacks={} fluidType={} picked={}",
+                total, inputSize, fluidSize, research, stacks, fluidType, picked.size)
+        return picked
+    }
+
+    private fun loadInputs(recipe: Recipe, buses: List<FakeBus>, tanks: List<FakeTank>)
+    {
+        for (bus in buses) bus.stacks[0] = ItemStack.EMPTY
+        for (tank in tanks) tank.set(null)
+        for (i in recipe.inputs.indices)
+        {
+            val stack = recipe.inputs[i].inputStacks.first().copy()
+            stack.count = maxOf(recipe.inputs[i].amount, 1)
+            buses[i].stacks[0] = stack
+        }
+        for (i in recipe.fluidInputs.indices)
+        {
+            val fluid = (recipe.fluidInputs[i] as GTRecipeFluidInput).inputFluidStack
+            tanks[i].set(FluidStack(fluid.fluid, fluid.amount))
+        }
+    }
+
+    private fun lockedRecipe(logic: AdvancedAssemblyLineRecipeLogic): Recipe?
+    {
+        val field = AdvancedAssemblyLineRecipeLogic::class.java.getDeclaredField("currentRecipe")
+        field.isAccessible = true
+        return field.get(logic) as Recipe?
+    }
+
+    private fun injectTanks(controller: MultiblockAdvancedAssemblyLine, tanks: List<IFluidTank>)
+    {
+        val field = MultiblockControllerBase::class.java.getDeclaredField("multiblockAbilities")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val abilities = field.get(controller)
+                as MutableMap<MultiblockAbility<*>, AbilityInstances>
+        val instances = AbilityInstances(MultiblockAbility.IMPORT_FLUIDS)
+        for (tank in tanks) instances.add(tank)
+        abilities[MultiblockAbility.IMPORT_FLUIDS] = instances
+    }
+
+    private fun newController(id: String, voltage: Long): MultiblockAdvancedAssemblyLine
+    {
+        val controller = MultiblockAdvancedAssemblyLine(ResourceLocation("gtlitecore", id))
+        val energyField = RecipeMapMultiblockController::class.java.getDeclaredField("energyContainer")
+        energyField.isAccessible = true
+        energyField.set(controller, EnergyContainerList(listOf(FakeEnergy(voltage))))
+        val abilitiesField = MultiblockControllerBase::class.java.getDeclaredField("multiblockAbilities")
+        abilitiesField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val abilities = abilitiesField.get(controller)
+                as MutableMap<MultiblockAbility<*>, AbilityInstances>
+        val hatches = AbilityInstances(MultiblockAbility.DATA_ACCESS_HATCH)
+        hatches.add(FakeDataHatch())
+        abilities[MultiblockAbility.DATA_ACCESS_HATCH] = hatches
+        return controller
+    }
+
+    private fun injectBuses(controller: MultiblockAdvancedAssemblyLine,
+                            buses: List<IItemHandlerModifiable>)
+    {
+        val field = MultiblockControllerBase::class.java.getDeclaredField("multiblockAbilities")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val abilities = field.get(controller)
+                as MutableMap<MultiblockAbility<*>, AbilityInstances>
+        val instances = AbilityInstances(MultiblockAbility.IMPORT_ITEMS)
+        for (bus in buses) instances.add(bus)
+        abilities[MultiblockAbility.IMPORT_ITEMS] = instances
+    }
+
+    /** Minimal item handler; writes are ignored so the inventory stays stable while measuring. */
+    private class FakeBus : IItemHandlerModifiable
+    {
+        val stacks = Array(4) { ItemStack.EMPTY }
+        override fun getSlots() = stacks.size
+        override fun getStackInSlot(slot: Int) = stacks[slot]
+        override fun insertItem(slot: Int, stack: ItemStack, simulate: Boolean) = stack
+        override fun extractItem(slot: Int, amount: Int, simulate: Boolean) = ItemStack.EMPTY
+        override fun getSlotLimit(slot: Int) = 64
+        override fun setStackInSlot(slot: Int, stack: ItemStack) {}
+    }
+
+    private class FakeDataHatch : IDataAccessHatch
+    {
+        override fun isRecipeAvailable(recipe: Recipe, seen: MutableCollection<IDataAccessHatch>) = true
+        override fun isCreative() = true
+    }
+
+    private class FakeTank : IFluidTank
+    {
+        private var fluid: FluidStack? = null
+        fun set(stack: FluidStack?) { fluid = stack }
+        override fun getFluid() = fluid
+        override fun getFluidAmount() = fluid?.amount ?: 0
+        override fun getCapacity() = Int.MAX_VALUE
+        override fun getInfo() = FluidTankInfo(fluid, getCapacity())
+        override fun fill(resource: FluidStack?, doFill: Boolean) = 0
+        override fun drain(maxDrain: Int, doDrain: Boolean): FluidStack?
+        {
+            val current = fluid ?: return null
+            val drained = minOf(maxDrain, current.amount)
+            if (doDrain && drained > 0) fluid = if (drained >= current.amount) null
+            else FluidStack(current.fluid, current.amount - drained)
+            return FluidStack(current.fluid, drained)
+        }
+    }
+
+    private class FakeEnergy(private val voltage: Long) : IEnergyContainer
+    {
+        override fun acceptEnergyFromNetwork(side: EnumFacing?, voltage: Long, amperage: Long) = 0L
+        override fun inputsEnergy(side: EnumFacing?) = false
+        override fun changeEnergy(differenceAmount: Long) = 0L
+        override fun getEnergyStored() = Long.MAX_VALUE / 8
+        override fun getEnergyCapacity() = Long.MAX_VALUE / 8
+        override fun getInputAmperage() = 2L
+        override fun getInputVoltage() = voltage
+    }
+
+    // endregion
 
     private fun sample(times: Int, warmup: Int = 0, body: () -> Unit): LongArray
     {
