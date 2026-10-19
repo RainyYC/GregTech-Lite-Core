@@ -162,7 +162,7 @@ internal class CoreModule : CustomModule
     
     override fun serverStarted(event: FMLServerStartedEvent)
     {
-        // ...
+        gregtechlite.gtlitecore.core.debug.AALIdleBench.onServerStarted(event)
     }
     
     override fun serverStopping(event: FMLServerStoppingEvent)
