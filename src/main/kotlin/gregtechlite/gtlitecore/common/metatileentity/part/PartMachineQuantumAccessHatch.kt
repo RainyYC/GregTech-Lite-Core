@@ -8,6 +8,7 @@ import appeng.api.networking.IGridNode
 import appeng.api.networking.events.MENetworkCellArrayUpdate
 import appeng.api.networking.security.IActionHost
 import appeng.api.networking.security.IActionSource
+import appeng.api.networking.storage.IStorageGrid
 import appeng.api.storage.ICellContainer
 import appeng.api.storage.ICellInventory
 import appeng.api.storage.IMEInventoryHandler
@@ -16,6 +17,7 @@ import appeng.api.storage.channels.IFluidStorageChannel
 import appeng.api.storage.channels.IItemStorageChannel
 import appeng.api.storage.data.IAEFluidStack
 import appeng.api.storage.data.IAEItemStack
+import appeng.api.storage.data.IAEStack
 import appeng.api.storage.data.IItemList
 import appeng.api.util.AECableType
 import appeng.api.util.AEPartLocation
@@ -45,6 +47,7 @@ import gregtechlite.gtlitecore.client.renderer.texture.GTLiteOverlays
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.storage.MultiblockQuantumChest
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.storage.MultiblockQuantumTank
 import java.math.BigInteger
+import java.util.Optional
 import java.util.EnumSet
 import net.minecraft.client.resources.I18n
 import net.minecraft.item.ItemStack
@@ -52,6 +55,7 @@ import net.minecraft.nbt.NBTTagCompound
 import net.minecraft.network.PacketBuffer
 import net.minecraft.util.EnumFacing
 import net.minecraft.util.ResourceLocation
+import net.minecraft.entity.player.EntityPlayer
 import net.minecraft.world.World
 import net.minecraftforge.fluids.FluidStack
 import net.minecraftforge.fml.relauncher.Side
@@ -113,6 +117,27 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
         is MultiblockQuantumChest -> controller.itemStorage().revision
         is MultiblockQuantumTank  -> controller.fluidStorage().revision
         else                      -> lastRevision
+    }
+
+    private val machineSource: IActionSource = object : IActionSource
+    {
+        override fun player(): Optional<EntityPlayer> = Optional.empty<EntityPlayer>()
+        override fun machine(): Optional<IActionHost> = Optional.of<IActionHost>(this@PartMachineQuantumAccessHatch)
+        @Suppress("UNCHECKED_CAST")
+        override fun <T> context(cls: Class<T>): Optional<T> = Optional.empty<Any>() as Optional<T>
+    }
+
+    /**
+     * AE updates terminals from stack alterations, not from a cell array update alone: a stack that
+     * disappears (size goes to zero) has to be posted as a negative alteration or the terminal keeps
+     * showing it until the window is reopened.
+     */
+    private fun postAlteration(channel: IStorageChannel<*>, stack: IAEStack<*>?)
+    {
+        if (stack == null) return
+        val grid = getProxy()?.node?.grid ?: return
+        grid.getCache<IStorageGrid>(IStorageGrid::class.java)
+            .postAlterationOfStoredItems(channel, listOf(stack), machineSource)
     }
 
     fun notifyME()
@@ -355,6 +380,7 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
             {
                 notifyME()
                 lastRevision = storedRevision()
+                postAlteration(itemChannel, input.copy().setStackSize(acceptedAmount))
             }
             val leftoverStack = input.copy()
             leftoverStack.decStackSize(acceptedAmount)
@@ -370,6 +396,7 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
             {
                 notifyME()
                 lastRevision = storedRevision()
+                postAlteration(itemChannel, drained.copy().setStackSize(-drained.stackSize))
             }
             return drained
         }
@@ -422,7 +449,10 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
                 return input
 
             if (actionable == Actionable.MODULATE)
+            {
                 notifyME()
+                postAlteration(fluidChannel, input.copy().setStackSize(acceptedAmount))
+            }
 
             val leftoverStack = input.copy()
             leftoverStack.decStackSize(acceptedAmount)
@@ -436,7 +466,10 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
 
             val drainedStack = drainFluids(request, actionable == Actionable.MODULATE)
             if (drainedStack != null && actionable == Actionable.MODULATE)
+            {
                 notifyME()
+                postAlteration(fluidChannel, drainedStack.copy().setStackSize(-drainedStack.stackSize))
+            }
             return drainedStack
         }
 
