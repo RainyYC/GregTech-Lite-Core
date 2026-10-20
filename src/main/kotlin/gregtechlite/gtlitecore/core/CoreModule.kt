@@ -158,6 +158,8 @@ internal class CoreModule : CustomModule
         GTLiteAPI.commandManager = commandManager
         commandManager.registerServerCommand(event)
         GTLiteAPI.commandManager.addCommand(CommandTreeMaterial())
+        if (System.getenv("GTLITE_BENCH") == "true")
+            GTLiteAPI.commandManager.addCommand(gregtechlite.gtlitecore.common.command.CommandQuantumBench())
     }
     
     override fun serverStarted(event: FMLServerStartedEvent)
