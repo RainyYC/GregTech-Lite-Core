@@ -158,7 +158,7 @@ internal class CoreModule : CustomModule
         GTLiteAPI.commandManager = commandManager
         commandManager.registerServerCommand(event)
         GTLiteAPI.commandManager.addCommand(CommandTreeMaterial())
-        if (System.getenv("GTLITE_BENCH") == "true")
+        if (System.getenv("GTLITE_BENCH") == "true" || System.getProperty("gtlitecore.bench") == "true")
             GTLiteAPI.commandManager.addCommand(gregtechlite.gtlitecore.common.command.CommandQuantumBench())
     }
     
