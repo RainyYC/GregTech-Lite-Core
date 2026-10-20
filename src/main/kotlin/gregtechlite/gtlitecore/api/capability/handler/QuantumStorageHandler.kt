@@ -26,6 +26,10 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
     private val contents = LinkedHashMap<HashKey<T>, BigInteger>()
     private var storedTotal: BigInteger = BigInteger.ZERO
 
+    /** Monotonic counter of content changes, for observers that only need to know "something moved". */
+    var revision: Long = 0L
+        private set
+
     fun rebuild(newMaxDistinct: Int, newTotalCapacity: BigInteger): Boolean
     {
         maxDistinct = newMaxDistinct.coerceAtLeast(0)
@@ -43,7 +47,11 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
                 isRemoved = true
             }
         }
-        if (isRemoved) recomputeTotal()
+        if (isRemoved)
+        {
+            recomputeTotal()
+            revision++
+        }
         return isRemoved
     }
 
@@ -65,6 +73,7 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
             {
                 contents[key] = currentAmount.add(acceptedAmount)
                 storedTotal = storedTotal.add(acceptedAmount)
+                revision++
             }
             return acceptedAmount
         }
@@ -77,6 +86,7 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
         {
             contents[key] = acceptedAmount
             storedTotal = storedTotal.add(acceptedAmount)
+            revision++
         }
         return acceptedAmount
     }
@@ -95,6 +105,7 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
         else
             contents[key] = remainingAmount
         storedTotal = storedTotal.subtract(removedAmount)
+        revision++
         return removedAmount
     }
 
@@ -161,6 +172,7 @@ class QuantumStorageHandler<T>(maxDistinct: Int,
         var total = BigInteger.ZERO
         for (amount in contents.values) total = total.add(amount)
         storedTotal = total
+        revision++
     }
 
     private fun computeSlotCapacity(slots: Int, capacity: BigInteger): BigInteger

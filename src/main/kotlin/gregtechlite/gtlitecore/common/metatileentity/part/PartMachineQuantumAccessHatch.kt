@@ -41,7 +41,6 @@ import gregtech.api.metatileentity.interfaces.IGregTechTileEntity
 import gregtech.api.mui.GTGuis
 import gregtech.common.metatileentities.multi.multiblockpart.MetaTileEntityMultiblockPart
 import gregtechlite.gtlitecore.api.extension.longValue
-import gregtechlite.gtlitecore.api.s
 import gregtechlite.gtlitecore.client.renderer.texture.GTLiteOverlays
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.storage.MultiblockQuantumChest
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.storage.MultiblockQuantumTank
@@ -75,8 +74,7 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
 
     private var aeProxy: AENetworkProxy? = null
     private var lastActive: Boolean = false
-    private var lastTotal: BigInteger = BigInteger.ZERO
-    private var lastDistinct: Int = 0
+    private var lastRevision: Long = -1L
 
     override fun createMetaTileEntity(te: IGregTechTileEntity): MetaTileEntity
         = PartMachineQuantumAccessHatch(metaTileEntityId, tier)
@@ -84,26 +82,20 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
     override fun update()
     {
         super.update()
-        if (!world.isRemote && offsetTimer % (1.s) == 0L)
+        if (!world.isRemote)
         {
-            val controller = getController()
-            val totalCapacity = when (controller)
+            // Contents can change through this hatch, the machine's own buses or another hatch, so
+            // watch a monotonic revision instead of comparing totals (equal totals can still swap).
+            val revision = when (val controller = getController())
             {
-                is MultiblockQuantumChest -> if (controller.isWorkingEnabled) controller.itemStorage().totalStored() else BigInteger.ZERO
-                is MultiblockQuantumTank  -> if (controller.isWorkingEnabled) controller.fluidStorage().totalStored() else BigInteger.ZERO
-                else                      -> BigInteger.ZERO
+                is MultiblockQuantumChest -> if (controller.isWorkingEnabled) controller.itemStorage().revision else 0L
+                is MultiblockQuantumTank  -> if (controller.isWorkingEnabled) controller.fluidStorage().revision else 0L
+                else                      -> 0L
             }
-            val distinctSlots = when (controller)
+            if (revision != lastRevision)
             {
-                is MultiblockQuantumChest -> if (controller.isWorkingEnabled) controller.itemStorage().distinctSlots() else 0
-                is MultiblockQuantumTank  -> if (controller.isWorkingEnabled) controller.fluidStorage().distinctSlots() else 0
-                else                      -> 0
-            }
-            if (totalCapacity != lastTotal || distinctSlots != lastDistinct)
-            {
-                notifyME()
-                lastTotal = totalCapacity
-                lastDistinct = distinctSlots
+                if (lastRevision >= 0L) notifyME()
+                lastRevision = revision
             }
         }
 
@@ -114,6 +106,13 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
             lastActive = isOnline
             writeCustomData(GregtechDataCodes.UPDATE_ONLINE_STATUS) { it.writeBoolean(isOnline) }
         }
+    }
+
+    private fun storedRevision(): Long = when (val controller = getController())
+    {
+        is MultiblockQuantumChest -> controller.itemStorage().revision
+        is MultiblockQuantumTank  -> controller.fluidStorage().revision
+        else                      -> lastRevision
     }
 
     fun notifyME()
@@ -352,7 +351,11 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
             if (acceptedAmount == 0L)
                 return input
 
-            if (actionable == Actionable.MODULATE) notifyME()
+            if (actionable == Actionable.MODULATE)
+            {
+                notifyME()
+                lastRevision = storedRevision()
+            }
             val leftoverStack = input.copy()
             leftoverStack.decStackSize(acceptedAmount)
             return if (leftoverStack.stackSize <= 0) null else leftoverStack
@@ -363,7 +366,11 @@ class PartMachineQuantumAccessHatch(id: ResourceLocation, tier: Int)
             if (readMode == AccessRestriction.NO_ACCESS || readMode == AccessRestriction.WRITE)
                 return null
             val drained = drainItems(request, actionable == Actionable.MODULATE)
-            if (drained != null && actionable == Actionable.MODULATE) notifyME()
+            if (drained != null && actionable == Actionable.MODULATE)
+            {
+                notifyME()
+                lastRevision = storedRevision()
+            }
             return drained
         }
 
