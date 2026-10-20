@@ -16,6 +16,7 @@ import gregtech.api.util.ItemStackHashStrategy
 import gregtech.common.ConfigHolder
 import gregtechlite.gtlitecore.common.metatileentity.multiblock.advanced.MultiblockAdvancedAssemblyLine
 import net.minecraft.item.ItemStack
+import net.minecraftforge.fluids.FluidStack
 import net.minecraftforge.fluids.IFluidTank
 import net.minecraftforge.items.IItemHandlerModifiable
 import kotlin.math.max
@@ -39,6 +40,9 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     private var currentRecipe: Recipe? = null
     private var sliceEUt: Long = 0L
     private var sliceDuration: Int = 0
+
+    /** Recipes run per cycle, i.e. the parallelism sub-tick overclocking converted the excess power into. */
+    private var parallel: Int = 1
     private var inputCount: Int = 0
     private var pipelineStuck: Boolean = false
     private var pipelineActive: Boolean = false
@@ -225,7 +229,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         for (i in itemInputs.indices)
         {
             val stack = firstValidStack(buses[i]) ?: return false
-            if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount)
+            if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount * parallel)
                 return false
         }
         return hasAllFluids(recipe.fluidInputs, tanks)
@@ -248,13 +252,16 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             val perSliceBudget = (inputPower / itemInputs.size).coerceAtLeast(recipe.eUt)
             ocParams.initialize(recipe.eUt, baseDuration, ocAmount)
             modifyOverclockPre(ocParams, recipe.propertyStorage())
-            OverclockingLogic.subTickNonParallelOC(ocParams, ocResult, perSliceBudget,
+            OverclockingLogic.subTickParallelOC(ocParams, ocResult, perSliceBudget,
                 OverclockingLogic.STD_DURATION_FACTOR, OverclockingLogic.STD_VOLTAGE_FACTOR)
         }
         modifyOverclockPost(ocResult, recipe.propertyStorage())
 
         currentRecipe = recipe
         lastRecipe = recipe
+        parallel = ocResult.parallel().coerceAtLeast(1)
+        // subTickParallelOC already folds the parallel factor into the reported EUt (an extra parallel
+        // layer multiplies it by the voltage factor, not by the parallelism as well).
         sliceEUt = ocResult.eut().coerceAtLeast(1L)
         sliceDuration = ocResult.duration().coerceAtLeast(1)
         inputCount = itemInputs.size
@@ -326,6 +333,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         currentRecipe = null
         sliceEUt = 0L
         sliceDuration = 0
+        parallel = 1
         inputCount = 0
         for (slice in slices)
             slice.reset()
@@ -342,7 +350,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         for (i in itemInputs.indices)
         {
             val stack = firstValidStack(buses[i]) ?: return false
-            if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount)
+            if (!itemInputs[i].acceptsStack(stack) || stack.count < itemInputs[i].amount * parallel)
                 return false
         }
         return hasAllFluids(recipe.fluidInputs, controller.getAbilities(MultiblockAbility.IMPORT_FLUIDS))
@@ -364,7 +372,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         for (i in fluidInputs.indices)
         {
             val input = fluidInputs[i]
-            val requiredAmount = input.amount
+            val requiredAmount = input.amount * parallel
 
             val preferredFluid = tanks.getOrNull(i)
             if (preferredFluid != null && isFluidSufficient(preferredFluid, input, requiredAmount)) continue
@@ -399,7 +407,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
         for (i in fluidInputs.indices)
         {
             val input = fluidInputs[i]
-            var remainingAmount = input.amount
+            var remainingAmount = input.amount * parallel
 
             val preferredFluid = tanks.getOrNull(i)
             if (preferredFluid != null && remainingAmount > 0)
@@ -441,8 +449,23 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
     {
         val recipe = currentRecipe ?: return false
 
-        val items = recipe.outputs.filter { !it.isEmpty }.map { it.copy() }
-        val fluids = recipe.fluidOutputs.map { it.copy() }
+        val count = parallel.coerceAtLeast(1)
+        val items = ArrayList<ItemStack>()
+        for (output in recipe.outputs)
+        {
+            if (output.isEmpty) continue
+            var remaining = output.count.coerceAtLeast(1).toLong() * count
+            while (remaining > 0)
+            {
+                val size = minOf(remaining, output.maxStackSize.toLong()).toInt()
+                items.add(output.copy().also { it.count = size })
+                remaining -= size
+            }
+        }
+        val fluids = recipe.fluidOutputs.map { output: FluidStack ->
+            val amount = (output.amount.toLong() * count).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            FluidStack(output.fluid, amount, output.tag)
+        }
 
         val outputInventory = controller.outputInventory
         val outputTanks = controller.outputFluidInventory
@@ -550,7 +573,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
             for (s in 0 until bus.slots)
             {
                 val stack = bus.getStackInSlot(s)
-                if (!stack.isEmpty && input.acceptsStack(stack) && stack.count >= input.amount)
+                if (!stack.isEmpty && input.acceptsStack(stack) && stack.count >= input.amount * parallel)
                 {
                     slot = s
                     break
@@ -560,7 +583,7 @@ class AdvancedAssemblyLineRecipeLogic(private val controller: MultiblockAdvanced
 
             val stack = bus.getStackInSlot(slot)
             val residual = stack.copy()
-            residual.shrink(input.amount)
+            residual.shrink(input.amount * parallel)
             bus.setStackInSlot(slot, if (residual.isEmpty) ItemStack.EMPTY else residual)
 
             progress = sliceDuration
