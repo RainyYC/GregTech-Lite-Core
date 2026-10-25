@@ -162,7 +162,10 @@ internal class CoreModule : CustomModule
     
     override fun serverStarted(event: FMLServerStartedEvent)
     {
-        // ...
+        gregtechlite.gtlitecore.core.debug.ChancedParallelBench.run()
+        net.minecraftforge.fml.common.FMLCommonHandler.instance().minecraftServerInstance?.addScheduledTask {
+            net.minecraftforge.fml.common.FMLCommonHandler.instance().minecraftServerInstance?.initiateShutdown()
+        }
     }
     
     override fun serverStopping(event: FMLServerStoppingEvent)
